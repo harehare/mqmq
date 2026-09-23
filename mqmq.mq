@@ -1,0 +1,30 @@
+# mqmq/mqmq.mq
+# mqmq – an mq interpreter written in mq.
+#
+# Usage:
+# mq -L mqmq -f mqmq/mqmq.mq --args query '<mq-query>' <files...>
+#
+# The query is tokenized, parsed, and evaluated against the input markdown
+# nodes using mq's own built-in runtime as the execution substrate.
+
+import "lexer" |
+import "parser" |
+import "eval" |
+
+# # Run an mq query string against the current input nodes.
+# # self = array of all input nodes (piped in via "nodes | mqmq(...)").
+def mqmq(query_str):
+  mqmq_with(query_str, self, {})
+end
+
+# Run an mq query string against an explicit value and variable environment.
+#
+# This is the embedding API used by moku.  `value` is available as `.` and
+# `env` supplies named values (for example, the top-level keys of a JSON
+# configuration object).  The caller-provided `__nodes__` value, if any, is
+# deliberately replaced so `nodes` is always consistent with the input value.
+def mqmq_with(query_str, value, env = {}):
+  let toks = lexer::lex(query_str)
+  | let ast = parser::mq_parse(toks)
+  | eval::mq_eval(ast, value, set(env, "__nodes__", value))[:val]
+end

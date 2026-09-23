@@ -1,0 +1,70 @@
+# mqmq/lexer_tests.mq
+# Tests for the mqmq lexer, run with `mq-test lexer_tests.mq`.
+
+import "lexer"
+| include "test"
+
+def _tok(t, v): {t: t, v: v} end
+def _lex(q): filter(lexer::lex(q), fn(t): t[:t] != "eof" end) end
+
+# @parametrize([
+#   ["hello", [_tok("ident", "hello")]],
+#   ["let", [_tok("kw", "let")]],
+#   ["if", [_tok("kw", "if")]],
+#   ["true", [_tok("bool", "true")]],
+#   ["false", [_tok("bool", "false")]],
+#   ["None", [_tok("none", "")]],
+#   ["42", [_tok("num", "42")]],
+#   ["3.14", [_tok("num", "3.14")]],
+#   ["\"hi\"", [_tok("str", "hi")]],
+#   [".h1", [_tok("sel", "h1")]],
+#   [".h", [_tok("sel", "h")]],
+#   [".", [_tok("dot", ".")]],
+#   ["|", [_tok("op", "|")]],
+#   ["||", [_tok("op", "||")]],
+#   ["==", [_tok("op", "==")]],
+#   ["!=", [_tok("op", "!=")]],
+#   [":", [_tok("op", ":")]],
+#   [":foo", [_tok("atom", "foo")]],
+#   ["=~", [_tok("op", "=~")]],
+#   ["!~", [_tok("op", "!~")]],
+#   ["??", [_tok("op", "??")]],
+#   ["nodes", [_tok("kw", "nodes")]],
+#   ["..", [_tok("op", "..")]],
+#   ["@", [_tok("op", "@")]],
+#   ["//=", [_tok("op", "//=")]],
+#   ["::", [_tok("op", "::")]],
+#   ["module", [_tok("kw", "module")]],
+#   ["\"-\"", [_tok("str", "-")]],
+#   ["(x)", [_tok("op", "("), _tok("ident", "x"), _tok("op", ")")]],
+#   ["a b", [_tok("ident", "a"), _tok("ident", "b")]],
+#   ["<< >>", [_tok("op", "<<"), _tok("op", ">>")]],
+#   ["break continue", [_tok("kw", "break"), _tok("kw", "continue")]],
+#   ["try catch", [_tok("kw", "try"), _tok("kw", "catch")]],
+#   ["until unless", [_tok("kw", "until"), _tok("kw", "unless")]],
+#   ["1..5", [_tok("num", "1"), _tok("op", ".."), _tok("num", "5")]],
+#   ["if (x): y", [
+#     _tok("kw", "if"), _tok("op", "("), _tok("ident", "x"), _tok("op", ")"),
+#     _tok("op", ":"), _tok("ident", "y"),
+#   ]],
+# ])
+def test_lex(input, expected):
+  assert_eq(_lex(input), expected)
+end
+
+# -- interpolated strings (single istr token carrying parsed segments) --
+
+def test_interp_string_is_single_token():
+  assert_eq(len(_lex("s\"a${1+2}b\"")), 1)
+end
+
+def test_interp_string_segments():
+  let toks = _lex("s\"a${1+2}b\"")
+  | assert_eq(toks[0][:t], "istr")
+  | assert_eq(toks[0][:v], [{kind: "text", val: "a"}, {kind: "expr", val: "1+2"}, {kind: "text", val: "b"}])
+end
+
+def test_interp_string_no_expr():
+  let toks = _lex("s\"plain\"")
+  | assert_eq(toks[0][:v], [{kind: "text", val: "plain"}])
+end

@@ -1,0 +1,136 @@
+# mqmq/parser_tests.mq
+# Tests for the mqmq parser, run with `mq-test parser_tests.mq`.
+
+import "lexer"
+| import "parser"
+| include "test"
+
+def _parse(q): parser::mq_parse(lexer::lex(q)) end
+
+# @parametrize([
+#   ["1 + 2", {kind: "bin", op: "+", left: {kind: "num", val: 1}, right: {kind: "num", val: 2}}],
+#   ["let x = 5", {kind: "let", name: "x", val: {kind: "num", val: 5}}],
+#   [".h1", {kind: "sel", name: "h1"}],
+#   ["break", {kind: "break", val: None}],
+#   ["continue", {kind: "continue"}],
+#   ["nodes", {kind: "nodes"}],
+#   ["1..5", {kind: "bin", op: "..", left: {kind: "num", val: 1}, right: {kind: "num", val: 5}}],
+#   ["\"x\" @ \"-\"", {kind: "bin", op: "@", left: {kind: "str", val: "x"}, right: {kind: "str", val: "-"}}],
+#   # A string literal "-" must not be parsed as a unary-minus prefix.
+#   ["\"-\"", {kind: "str", val: "-"}],
+#   ["x //= 2", {kind: "assign", name: "x", op: "//=", val: {kind: "num", val: 2}}],
+#   ["math::add(1, 2)", {kind: "call", name: "math::add", args: [{kind: "num", val: 1}, {kind: "num", val: 2}]}],
+# ])
+def test_parse_exact_ast(query, expected):
+  assert_eq(_parse(query), expected)
+end
+
+def test_parse_break_with_value():
+  let ast = _parse("break 5")
+  | assert_eq({kind: ast[:kind], val_kind: ast[:val][:kind]}, {kind: "break", val_kind: "num"})
+end
+
+# @parametrize([
+#   ["None ?? 1", "??"],
+#   ["\"a\" =~ \"b\"", "=~"],
+#   ["2 << 3", "<<"],
+# ])
+def test_parse_binary_op(query, op):
+  assert_eq(_parse(query)[:op], op)
+end
+
+def test_parse_try_catch():
+  let ast = _parse("try: 1 catch: 2")
+  | assert_eq({kind: ast[:kind], body_kind: ast[:body][:kind], catch_kind: ast[:catch_body][:kind], catch_var: ast[:catch_var]},
+              {kind: "try", body_kind: "num", catch_kind: "num", catch_var: None})
+end
+
+def test_parse_try_catch_with_binder():
+  let ast = _parse("try: 1 catch(e): e")
+  | assert_eq({kind: ast[:kind], catch_var: ast[:catch_var], catch_kind: ast[:catch_body][:kind]},
+              {kind: "try", catch_var: "e", catch_kind: "ident"})
+end
+
+# @parametrize([
+#   ["until (i < 5): i end", "until"],
+#   ["unless (i < 5): i", "unless"],
+# ])
+def test_parse_conditional_loop_or_branch(query, kind):
+  let ast = _parse(query)
+  | assert_eq({kind: ast[:kind], cond_op: ast[:cond][:op], body_kind: ast[:body][:kind]},
+              {kind: kind, cond_op: "<", body_kind: "ident"})
+end
+
+def test_parse_interp():
+  let ast = _parse("s\"x${1}y\"")
+  | assert_eq(ast[:kind], "interp")
+  | assert_eq(len(ast[:segs]), 3)
+  | assert_eq(ast[:segs][1][:kind], "expr")
+  | assert_eq(ast[:segs][1][:node], {kind: "num", val: 1})
+end
+
+def test_parse_error_suppress():
+  let ast = _parse("f()?")
+  | assert_eq(ast[:kind], "trysuppress")
+  | assert_eq(ast[:target], {kind: "call", name: "f", args: []})
+end
+
+def test_parse_def_default_param():
+  let ast = _parse("def f(x, y=1): x end")
+  | assert_eq(ast[:params], [{name: "x", default: None}, {name: "y", default: {kind: "num", val: 1}}])
+end
+
+def test_parse_let_array_destructure():
+  let ast = _parse("let [a, b] = [1, 2]")
+  | assert_eq(ast[:kind], "let_destructure")
+  | assert_eq(ast[:pattern], {kind: "arraypat", names: ["a", "b"], rest: None})
+end
+
+def test_parse_let_array_destructure_rest():
+  let ast = _parse("let [head, ..tail] = [1, 2, 3]")
+  | assert_eq(ast[:pattern], {kind: "arraypat", names: ["head"], rest: "tail"})
+end
+
+def test_parse_let_dict_destructure():
+  let ast = _parse("let {name, age} = obj")
+  | assert_eq(ast[:kind], "let_destructure")
+  | assert_eq(ast[:pattern], {kind: "dictpat", names: ["name", "age"]})
+end
+
+def test_parse_match_arms():
+  let ast = _parse("match (x): | 1: \"one\" | _: \"other\" end")
+  | assert_eq(ast[:kind], "match")
+  | assert_eq(len(ast[:arms]), 2)
+  | assert_eq(ast[:arms][0][:pattern], {kind: "litpat", val: {kind: "num", val: 1}})
+  | assert_eq(ast[:arms][1][:pattern], {kind: "wildpat"})
+end
+
+def test_parse_match_type_pattern():
+  let ast = _parse("match (x): | :string: 1 end")
+  | assert_eq(ast[:arms][0][:pattern], {kind: "typepat", name: "string"})
+end
+
+def test_parse_match_guard():
+  let ast = _parse("match (x): | y if (y > 0): 1 end")
+  | let arm = ast[:arms][0]
+  | assert_eq(arm[:pattern], {kind: "bindpat", name: "y"})
+  | assert_eq(arm[:guard][:kind], "bin")
+  | assert_eq(arm[:guard][:op], ">")
+end
+
+def test_parse_match_or_pattern():
+  let ast = _parse("match (x): | 1 || 2: \"a\" end")
+  | assert_eq(ast[:arms][0][:pattern][:kind], "orpat")
+end
+
+def test_parse_module():
+  let ast = _parse("module math: def add(a, b): a end end")
+  | assert_eq(ast[:kind], "module")
+  | assert_eq(ast[:name], "math")
+end
+
+def test_parse_def_semicolon_terminator():
+  let ast = _parse("def f(x): x;")
+  | assert_eq(ast[:kind], "def")
+  | assert_eq(ast[:body], {kind: "ident", name: "x"})
+end

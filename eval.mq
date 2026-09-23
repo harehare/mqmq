@@ -1,0 +1,801 @@
+# mqmq/eval.mq
+# Tree-walking evaluator for the mq AST, written in mq.
+#
+# The evaluator uses mq's own built-in functions to perform operations,
+# so it is a meta-interpreter layered on top of the real mq runtime.
+#
+# eval(ast, value, env) → {val: <result>, env: <updated_env>}
+#   ast   - AST node produced by parser.mq
+#   value - current "self" value flowing through the pipeline
+#   env   - dict of variable bindings {name: value, ...}
+
+import "yaml" |
+
+# ── environment helpers ───────────────────────────────────────────────────────
+
+## Look up a name in the environment; returns None if not found (caller must check).
+def _env_get(env, name):
+  env[name]
+end
+
+## Bind a name in the environment, returning the new env.
+def _env_set(env, name, val):
+  set(env, name, val)
+end
+
+## Read the control-flow signal ("none" | "break" | "continue") off an eval result.
+def _ctrl(r):
+  if (is_none(r[:ctrl])): "none" else: r[:ctrl]
+end
+
+## Bind an array or dict destructuring pattern (see parser.mq's "arraypat" /
+## "dictpat" nodes) against a value, returning the updated env.
+def _bind_pattern(pat, val, env):
+  if (pat[:kind] == "arraypat") do
+      let names = pat[:names]
+      | var e = env
+      | var i = 0
+      | while (i < len(names)):
+          e = _env_set(e, names[i], if (i < len(val)): val[i] else: None)
+          | i += 1
+        end
+      | if (!is_none(pat[:rest])):
+          e = _env_set(e, pat[:rest], if (len(names) < len(val)): val[len(names):len(val)] else: [])
+      | e
+    end
+  else do
+      let names = pat[:names]
+      | var e = env
+      | var i = 0
+      | while (i < len(names)):
+          e = _env_set(e, names[i], val[names[i]])
+          | i += 1
+        end
+      | e
+    end
+end
+
+# ── match / pattern matching ────────────────────────────────────────────────
+
+def _match_type(name, val):
+  if (name == "string"): is_string(val)
+    elif (name == "number"): is_number(val)
+    elif (name == "array"):  is_array(val)
+    elif (name == "dict"):   is_dict(val)
+    elif (name == "bool"):   is_bool(val)
+    elif (name == "none"):   is_none(val)
+    else: false
+end
+
+## Try to match `val` against a single pattern node, returning
+## {matched: bool, env: <env with any bindings applied>}.
+def _match_pattern(pat, val, env):
+  let k = pat[:kind]
+  | if (k == "wildpat"):
+      {matched: true, env: env}
+    elif (k == "bindpat"):
+      {matched: true, env: _env_set(env, pat[:name], val)}
+    elif (k == "typepat"):
+      {matched: _match_type(pat[:name], val), env: env}
+    elif (k == "litpat") do
+      let lit_val = mq_eval(pat[:val], val, env)[:val]
+      | {matched: val == lit_val, env: env}
+    end
+    elif (k == "orpat") do
+      let lr = _match_pattern(pat[:left], val, env)
+      | if (lr[:matched]): lr else: _match_pattern(pat[:right], val, env)
+    end
+    elif (k == "arraypat") do
+      if (!is_array(val)) do
+          {matched: false, env: env}
+        end
+      elif (is_none(pat[:rest]) && len(pat[:names]) != len(val)) do
+          {matched: false, env: env}
+        end
+      elif (!is_none(pat[:rest]) && len(val) < len(pat[:names])) do
+          {matched: false, env: env}
+        end
+      else do
+          {matched: true, env: _bind_pattern(pat, val, env)}
+        end
+    end
+    elif (k == "dictpat") do
+      if (!is_dict(val)): {matched: false, env: env}
+      else: {matched: true, env: _bind_pattern(pat, val, env)}
+    end
+    else:
+      {matched: false, env: env}
+end
+
+## Walk match arms in order, returning the {val, env} of the first arm whose
+## pattern matches `matchval` and (if present) whose guard is truthy.
+def _try_match_arms(arms, matchval, value, env):
+  if (is_empty(arms)) do
+      error("No match arm matched")
+    end
+  else do
+      let arm = first(arms)
+      | let mr = _match_pattern(arm[:pattern], matchval, env)
+      | if (!mr[:matched]) do
+          _try_match_arms(arms[1:], matchval, value, env)
+        end
+        elif (!is_none(arm[:guard]) && !mq_eval(arm[:guard], value, mr[:env])[:val]) do
+          _try_match_arms(arms[1:], matchval, value, env)
+        end
+        else do
+          mq_eval(arm[:body], value, mr[:env])
+        end
+    end
+end
+
+# ── apply a closure (fn node) to arguments ───────────────────────────────────
+
+## Apply a single-arg fn closure to one argument.
+def _apply1(fn_val, arg, env):
+  let p = if (is_empty(fn_val[:params])): "_" else: fn_val[:params][0][:name]
+  | let call_env = set(fn_val[:env], p, arg)
+  | mq_eval(fn_val[:body], arg, call_env)[:val]
+end
+
+## Left-fold arr with fn(acc, item), starting from init. (No native `reduce`
+## builtin exists in real mq, so this is done by hand with a while loop.)
+def _reduce(arr, init, fn_val, env):
+  var acc = init
+  | var i = 0
+  | let n = len(arr)
+  | while (i < n):
+      acc = _apply2(fn_val, acc, arr[i], env)
+      | i += 1
+    end
+  | acc
+end
+
+## Apply a two-arg fn closure.
+def _apply2(fn_val, a1, a2, env):
+  let params = fn_val[:params]
+  | let p1 = if (len(params) > 0): params[0][:name] else: "_"
+  | let p2 = if (len(params) > 1): params[1][:name] else: "_"
+  | let call_env = set(set(fn_val[:env], p1, a1), p2, a2)
+  | mq_eval(fn_val[:body], a1, call_env)[:val]
+end
+
+# ── moku Markdown filters ────────────────────────────────────────────────────
+
+# Make a wikilink from a scalar, or from every item in an array.  This returns
+# ordinary Markdown text rather than a parsed node because mq's native runtime
+# has a wikilink selector but no corresponding node constructor.
+def _moku_wikilink(value):
+  if (is_array(value)):
+      map(value, fn(item): _moku_wikilink(item) end)
+    else:
+      "[[" + to_string(value) + "]]"
+end
+
+# Serialize a value as one YAML property.  Collections are indented beneath
+# the property key; scalar values stay on the same line.  `yaml_stringify` is
+# delegated to mq's standard yaml module, rather than reimplemented here.
+def _moku_yaml_property(value, key):
+  let yaml = yaml::yaml_stringify(value)
+  | if (is_array(value) || is_dict(value)):
+      key + ":\n" + indent(yaml, "  ")
+    else:
+      key + ": " + yaml
+end
+
+# ── selector evaluation ───────────────────────────────────────────────────────
+
+## Filter a value (array of nodes or a single node) by a named selector.
+def _eval_sel(name, value):
+  let pred = fn(node):
+    if (name == "h1"):      is_h1(node)
+      elif (name == "h2"):  is_h2(node)
+      elif (name == "h3"):  is_h3(node)
+      elif (name == "h4"):  is_h4(node)
+      elif (name == "h5"):  is_h5(node)
+      elif (name == "h6"):  is_h6(node)
+      elif (name == "h"):   is_h(node)
+      elif (name == "code"):        is_code(node)
+      elif (name == "list"):        is_list(node)
+      elif (name == "list_item"):   is_list(node)
+      elif (name == "table_cell"):  is_table_cell(node)
+      elif (name == "table_align"): is_table_align(node)
+      elif (name == "table"):       is_table_cell(node) || is_table_align(node)
+      elif (name == "blockquote"):  to_md_name(node) == "blockquote"
+      elif (name == "thematic_break"): to_md_name(node) == "Horizontal_rule"
+      elif (name == "html"):        is_html(node)
+      elif (name == "definition"):  to_md_name(node) == "definition"
+      elif (name == "text"):        !is_h(node) && !is_code(node) && !is_list(node) && !is_html(node)
+      else: error("Unknown selector: ." + name)
+  end
+  | if (is_array(value)):
+      filter(value, pred)
+    elif (pred(value)):
+      [value]
+    else:
+      []
+end
+
+# ── built-in function dispatch ────────────────────────────────────────────────
+
+## Evaluate a built-in function call.
+## args_vals is the list of already-evaluated argument values.
+def _eval_builtin(name, args_vals, value, env):
+  # Helper: first arg or current value if no args
+  let a0 = if (len(args_vals) > 0): args_vals[0] else: value
+  | let a1 = if (len(args_vals) > 1): args_vals[1] else: None
+  | let a2 = if (len(args_vals) > 2): args_vals[2] else: None
+
+  # Type predicates
+  | if (name == "is_empty"):    is_empty(a0)
+    elif (name == "is_array"):  is_array(a0)
+    elif (name == "is_dict"):   is_dict(a0)
+    elif (name == "is_string"): is_string(a0)
+    elif (name == "is_number"): is_number(a0)
+    elif (name == "is_bool"):   is_bool(a0)
+    elif (name == "is_none"):   is_none(a0)
+
+    # Markdown node type predicates
+    elif (name == "is_h1"):           is_h1(a0)
+    elif (name == "is_h2"):           is_h2(a0)
+    elif (name == "is_h3"):           is_h3(a0)
+    elif (name == "is_h4"):           is_h4(a0)
+    elif (name == "is_h5"):           is_h5(a0)
+    elif (name == "is_h6"):           is_h6(a0)
+    elif (name == "is_h"):            is_h(a0)
+    elif (name == "is_code"):         is_code(a0)
+    elif (name == "is_list"):         is_list(a0)
+    elif (name == "is_list_item"):    is_list(a0)
+    elif (name == "is_table_cell"):   is_table_cell(a0)
+    elif (name == "is_table_align"):  is_table_align(a0)
+    elif (name == "is_table"):        is_table_cell(a0) || is_table_align(a0)
+    elif (name == "is_blockquote"):   to_md_name(a0) == "blockquote"
+    elif (name == "is_thematic_break"): to_md_name(a0) == "Horizontal_rule"
+    elif (name == "is_html"):         is_html(a0)
+    elif (name == "is_definition"):   to_md_name(a0) == "definition"
+
+    # Conversion
+    elif (name == "to_text"):   to_text(a0)
+    elif (name == "to_string"): to_string(a0)
+    elif (name == "to_number"): to_number(a0)
+    elif (name == "to_bool"):   a0 == true || (is_number(a0) && a0 != 0) || (is_string(a0) && !is_empty(a0))
+
+    # Collection inspection
+    elif (name == "len"):     len(a0)
+    elif (name == "first"):   first(a0)
+    elif (name == "last"):    last(a0)
+    elif (name == "keys"):    keys(a0)
+    elif (name == "values"):  values(a0)
+    elif (name == "entries"): entries(a0)
+
+    # Collection construction / transformation
+    elif (name == "range"):
+      if (len(args_vals) == 1): range(a0)
+      else: range(a0, a1)
+    elif (name == "flatten"):  flatten(a0)
+    elif (name == "compact"):  compact(a0)
+    elif (name == "unique"):   unique_by(a0, fn(x): x end)
+    elif (name == "sort"):     sort(a0)
+    elif (name == "reverse"):  reverse(a0)
+    elif (name == "head") do
+      let n = if (is_none(a1)): 1 else: a1
+      | a0[0:n]
+    end
+    elif (name == "tail") do
+      let n = if (is_none(a1)): 1 else: a1
+      | let ln = len(a0)
+      | let from = if (ln - n < 0): 0 else: ln - n
+      | a0[from:ln]
+    end
+    elif (name == "zip"):      zip(a0, a1)
+
+    # Higher-order collection functions (a1 must be a fn closure)
+    elif (name == "map"):
+      map(a0, fn(item): _apply1(a1, item, env) end)
+    elif (name == "filter"):
+      filter(a0, fn(item): _apply1(a1, item, env) end)
+    elif (name == "flat_map"):
+      flat_map(a0, fn(item): _apply1(a1, item, env) end)
+    elif (name == "sort_by"):
+      sort_by(a0, fn(item): _apply1(a1, item, env) end)
+    elif (name == "group_by"):
+      group_by(a0, fn(item): _apply1(a1, item, env) end)
+    elif (name == "reduce"):
+      _reduce(a0, a2, a1, env)
+    elif (name == "each"):
+      each(a0, fn(item): _apply1(a1, item, env) end)
+    elif (name == "any"):
+      any(a0, fn(item): _apply1(a1, item, env) end)
+    elif (name == "all"):
+      all(a0, fn(item): _apply1(a1, item, env) end)
+
+    # Array mutation helpers
+    elif (name == "get"):   get(a0, a1)
+    elif (name == "set"):   set(a0, a1, a2)
+    elif (name == "del"):   del(a0, a1)
+    elif (name == "push"):  a0 + [a1]
+    elif (name == "pop"):   a0[0:len(a0) - 1]
+
+    # String operations
+    elif (name == "contains"):     contains(a0, a1)
+    elif (name == "starts_with"):  starts_with(a0, a1)
+    elif (name == "ends_with"):    ends_with(a0, a1)
+    elif (name == "replace"):      replace(a0, a1, a2)
+    elif (name == "gsub"):         gsub(a0, a1, a2)
+    elif (name == "split"):        split(a0, a1)
+    elif (name == "join"):         join(a0, if (is_none(a1)): "" else: a1)
+    elif (name == "trim"):         trim(a0)
+    elif (name == "ltrim"):        ltrim(a0)
+    elif (name == "rtrim"):        rtrim(a0)
+    elif (name == "upper"):        upcase(a0)
+    elif (name == "lower"):        downcase(a0)
+    elif (name == "regex_match"):  regex_match(a0, a1)
+
+    # Math
+    elif (name == "abs"):   abs(a0)
+    elif (name == "floor"): floor(a0)
+    elif (name == "ceil"):  ceil(a0)
+    elif (name == "round"): round(a0)
+    elif (name == "min"):
+      if (len(args_vals) == 1): first(sort(a0))
+      else: min(a0, a1)
+    elif (name == "max"):
+      if (len(args_vals) == 1): last(sort(a0))
+      else: max(a0, a1)
+    elif (name == "pow"):   pow(a0, a1)
+    elif (name == "sqrt"):  sqrt(a0)
+    elif (name == "log"):   ln(a0)
+
+    # Node / markdown operations
+    elif (name == "select") do
+      let pred_fn = a0
+      | filter(if (is_array(value)): value else: [value], fn(node): _apply1(pred_fn, node, env) end)
+    end
+    elif (name == "attr"):   attr(a0, a1)
+    elif (name == "set_attr"): set_attr(a0, a1, a2)
+    elif (name == "to_md_text"): to_md_text(a0)
+    elif (name == "to_md_list"): to_md_list(a0, a1)
+    elif (name == "to_html"): to_html(a0)
+
+    # Markdown construction and moku-compatible formatting filters.  The
+    # short names take their value from the pipeline (`title | h1`), while the
+    # `to_*` names retain mq's explicit-argument API.
+    elif (name == "to_h"):          to_h(a0, a1)
+    elif (name == "to_blockquote"): to_blockquote(a0)
+    elif (name == "to_strong"):     to_strong(a0)
+    elif (name == "to_em"):         to_em(a0)
+    elif (name == "to_delete"):     to_delete(a0)
+    elif (name == "to_code"):       to_code(a0, a1)
+    elif (name == "to_code_inline"): to_code_inline(a0)
+    elif (name == "h1"): to_h(a0, 1)
+    elif (name == "h2"): to_h(a0, 2)
+    elif (name == "h3"): to_h(a0, 3)
+    elif (name == "h4"): to_h(a0, 4)
+    elif (name == "h5"): to_h(a0, 5)
+    elif (name == "h6"): to_h(a0, 6)
+    elif (name == "blockquote"): to_blockquote(a0)
+    elif (name == "bold"):       to_strong(a0)
+    elif (name == "italic"):     to_em(a0)
+    elif (name == "strike"):     to_delete(a0)
+    elif (name == "code_inline"): to_code_inline(a0)
+    elif (name == "code"):        to_code(value, a0)
+    elif (name == "wikilink"):    _moku_wikilink(a0)
+    elif (name == "yaml_property"): _moku_yaml_property(value, a0)
+
+    # Control
+    elif (name == "error"): error(a0)
+    elif (name == "debug"): debug(a0)
+    elif (name == "env"):   env
+
+    else do
+      # Try to look up as user-defined function in env
+      let fn_val = env[name]
+      | if (is_none(fn_val)):
+          error("Unknown function: " + name)
+        else:
+          _call_user_fn(fn_val, args_vals, value, env)
+    end
+end
+
+## Call a user-defined function (def or fn closure) with a list of arg values.
+## Params are {name, default} pairs; a missing trailing arg falls back to its
+## default expression (evaluated in the call env built up so far, so later
+## defaults may reference earlier params) or None if there is no default.
+def _call_user_fn(fn_val, args_vals, value, env):
+  let params = fn_val[:params]
+  | var call_env = fn_val[:env]
+  | var i = 0
+  | while (i < len(params)):
+      let p = params[i]
+      | let arg_val = if (i < len(args_vals)): args_vals[i]
+                      elif (!is_none(p[:default])): mq_eval(p[:default], value, call_env)[:val]
+                      else: None
+      | call_env = set(call_env, p[:name], arg_val)
+      | i += 1
+    end
+  | mq_eval(fn_val[:body], value, call_env)[:val]
+end
+
+# ── conversion operator (@) ─────────────────────────────────────────────────
+
+## real mq's atoms (`:h1`, `:base64`, ...) are a distinct Symbol runtime type
+## that the host `@` operator switches on; mqmq's own atom nodes evaluate to
+## plain strings instead, so `@` can't just delegate to the host operator for
+## symbol-style targets. Reimplemented from scratch using mq's own string /
+## hashing / encoding builtins so both `x @ :h1` and `x @ "#"` style targets
+## (mqmq atoms and real mq's plain-string targets alike) work the same way.
+def _is_url_or_path(s):
+  !is_empty(regex_match(s, "^(https?://|\\./|\\.\\./|/)"))
+end
+
+def _eval_convert(input, target):
+  let s = to_string(input)
+  | if (target == "h1" || target == "#"):           "# " + s
+    elif (target == "h2" || target == "##"):        "## " + s
+    elif (target == "h3" || target == "###"):       "### " + s
+    elif (target == "h4" || target == "####"):      "#### " + s
+    elif (target == "h5" || target == "#####"):     "##### " + s
+    elif (target == "h6" || target == "######"):    "###### " + s
+    elif (target == ">"):        "> " + s
+    elif (target == "-"):        "- " + s
+    elif (target == "~~"):       "~~" + s + "~~"
+    elif (target == "**"):       "**" + s + "**"
+    elif (target == "--"):       "---"
+    elif (target == "base64"):   base64(s)
+    elif (target == "md5"):      md5(s)
+    elif (target == "sha256"):   sha256(s)
+    elif (target == "uri"):      url_encode(s)
+    elif (target == "urid"):     url_decode(s)
+    elif (target == "html"):     to_html(input)
+    elif (target == "text"):     to_text(input)
+    elif (_is_url_or_path(target)): "[" + s + "](" + target + ")"
+    else: error("Invalid convert: " + to_string(target))
+end
+
+# ── binary operator evaluation ────────────────────────────────────────────────
+
+def _eval_bin(op, left_val, right_val):
+  if (op == "+"):  left_val + right_val
+    elif (op == "-"):  left_val - right_val
+    elif (op == "*"):  left_val * right_val
+    elif (op == "/"):  left_val / right_val
+    elif (op == "%"):  left_val % right_val
+    elif (op == "=="):  left_val == right_val
+    elif (op == "!="):  left_val != right_val
+    elif (op == "<"):   left_val < right_val
+    elif (op == "<="):  left_val <= right_val
+    elif (op == ">"):   left_val > right_val
+    elif (op == ">="):  left_val >= right_val
+    elif (op == "&&"):  left_val && right_val
+    elif (op == "||"):  left_val || right_val
+    elif (op == "??"):  if (is_none(left_val)): right_val else: left_val
+    elif (op == "<<"):  left_val << right_val
+    elif (op == ">>"):  left_val >> right_val
+    elif (op == "=~"):  is_regex_match(left_val, right_val)
+    elif (op == "!~"):  is_not_regex_match(left_val, right_val)
+    elif (op == ".."):  left_val..right_val
+    elif (op == "@"):   _eval_convert(left_val, right_val)
+    else: error("Unknown binary operator: " + op)
+end
+
+# ── main evaluator ────────────────────────────────────────────────────────────
+
+## Evaluate an AST node, returning {val: <result>, env: <env>}.
+def mq_eval(ast, value, env):
+  let k = ast[:kind]
+  | if (k == "str"):   {val: ast[:val], env: env}
+    elif (k == "num"):  {val: ast[:val], env: env}
+    elif (k == "bool"): {val: ast[:val], env: env}
+    elif (k == "none"): {val: None, env: env}
+    elif (k == "atom"): {val: ast[:name], env: env}
+    elif (k == "self"): {val: value, env: env}
+    elif (k == "dot"):  {val: value, env: env}
+    elif (k == "nodes"): {val: env["__nodes__"], env: env}
+    elif (k == "ident") do
+      let v = _env_get(env, ast[:name])
+      | if (is_none(v)):
+          {val: _eval_builtin(ast[:name], [], value, env), env: env}
+        else:
+          {val: v, env: env}
+    end
+    elif (k == "sel"):   {val: _eval_sel(ast[:name], value), env: env}
+    elif (k == "if"):    _eval_if_node(ast, value, env)
+    elif (k == "unless"): _eval_unless(ast, value, env)
+    elif (k == "do"):    mq_eval(ast[:body], value, env)
+    elif (k == "fn"):    {val: {kind: "fn", params: ast[:params], body: ast[:body], env: env}, env: env}
+    elif (k == "while"):   _eval_while(ast, value, env)
+    elif (k == "until"):   _eval_until(ast, value, env)
+    elif (k == "foreach"): _eval_foreach(ast, value, env)
+
+    elif (k == "pipe") do
+      let lr = mq_eval(ast[:left], value, env)
+      | if (_ctrl(lr) != "none"):
+          lr
+        else:
+          mq_eval(ast[:right], lr[:val], lr[:env])
+    end
+
+    elif (k == "break") do
+      if (is_none(ast[:val])):
+        {val: value, env: env, ctrl: "break"}
+      else do
+        let vr = mq_eval(ast[:val], value, env)
+        | {val: vr[:val], env: vr[:env], ctrl: "break"}
+      end
+    end
+
+    elif (k == "continue"):
+      {val: value, env: env, ctrl: "continue"}
+
+    elif (k == "interp") do
+      let parts = map(ast[:segs], fn(s):
+        if (s[:kind] == "text"): s[:val]
+        else: to_string(mq_eval(s[:node], value, env)[:val])
+      end)
+      | {val: join(parts, ""), env: env}
+    end
+
+    elif (k == "try") do
+      try:
+        mq_eval(ast[:body], value, env)
+      catch(e):
+        if (is_none(ast[:catch_var])):
+          mq_eval(ast[:catch_body], value, env)
+        else:
+          mq_eval(ast[:catch_body], value, _env_set(env, ast[:catch_var], e))
+    end
+
+    elif (k == "trysuppress") do
+      try:
+        mq_eval(ast[:target], value, env)
+      catch:
+        {val: None, env: env}
+    end
+
+    elif (k == "match") do
+      let vr = mq_eval(ast[:val], value, env)
+      | _try_match_arms(ast[:arms], vr[:val], value, vr[:env])
+    end
+
+    elif (k == "module") do
+      let inner = mq_eval(ast[:body], value, env)
+      | let before_keys = keys(env)
+      | let after_keys = keys(inner[:env])
+      | let new_keys = filter(after_keys, fn(nk): !contains(before_keys, nk) end)
+      | var new_env = env
+      | var i = 0
+      | while (i < len(new_keys)):
+          new_env = _env_set(new_env, ast[:name] + "::" + new_keys[i], inner[:env][new_keys[i]])
+          | i += 1
+        end
+      | {val: None, env: new_env}
+    end
+
+    elif (k == "let") do
+      let vr = mq_eval(ast[:val], value, env)
+      | let new_env = _env_set(vr[:env], ast[:name], vr[:val])
+      | {val: vr[:val], env: new_env}
+    end
+
+    elif (k == "var") do
+      let vr = mq_eval(ast[:val], value, env)
+      | let new_env = _env_set(vr[:env], ast[:name], vr[:val])
+      | {val: vr[:val], env: new_env}
+    end
+
+    elif (k == "let_destructure") do
+      let vr = mq_eval(ast[:val], value, env)
+      | let new_env = _bind_pattern(ast[:pattern], vr[:val], vr[:env])
+      | {val: vr[:val], env: new_env}
+    end
+
+    elif (k == "var_destructure") do
+      let vr = mq_eval(ast[:val], value, env)
+      | let new_env = _bind_pattern(ast[:pattern], vr[:val], vr[:env])
+      | {val: vr[:val], env: new_env}
+    end
+
+    elif (k == "assign") do
+      let vr = mq_eval(ast[:val], value, env)
+      | let op = ast[:op]
+      | let cur_val = if (is_none(env[ast[:name]])): None else: env[ast[:name]]
+      | let new_val = if (op == "="):   vr[:val]
+                      elif (op == "+="): cur_val + vr[:val]
+                      elif (op == "-="): cur_val - vr[:val]
+                      elif (op == "*="): cur_val * vr[:val]
+                      elif (op == "/="): cur_val / vr[:val]
+                      elif (op == "%="): cur_val % vr[:val]
+                      elif (op == "//="): floor(cur_val / vr[:val])
+                      else: vr[:val]
+      | let new_env = _env_set(vr[:env], ast[:name], new_val)
+      | {val: new_val, env: new_env}
+    end
+
+    elif (k == "def") do
+      let fn_val = {kind: "fn", params: ast[:params], body: ast[:body], env: env}
+      | let new_env = _env_set(env, ast[:name], fn_val)
+      | {val: fn_val, env: new_env}
+    end
+
+    elif (k == "call") do
+      let args_vals = map(ast[:args], fn(a): mq_eval(a, value, env)[:val] end)
+      | {val: _eval_builtin(ast[:name], args_vals, value, env), env: env}
+    end
+
+    elif (k == "bin") do
+      let lr = mq_eval(ast[:left], value, env)
+      | let rr = mq_eval(ast[:right], value, lr[:env])
+      | {val: _eval_bin(ast[:op], lr[:val], rr[:val]), env: rr[:env]}
+    end
+
+    elif (k == "un") do
+      let er = mq_eval(ast[:expr], value, env)
+      | let v = if (ast[:op] == "!"): !er[:val]
+                elif (ast[:op] == "-"): 0 - er[:val]
+                else: er[:val]
+      | {val: v, env: er[:env]}
+    end
+
+    elif (k == "arr") do
+      let items = map(ast[:items], fn(a): mq_eval(a, value, env)[:val] end)
+      | {val: items, env: env}
+    end
+
+    elif (k == "dict") do
+      var d = {}
+      | var cur_env = env
+      | var i = 0
+      | while (i < len(ast[:pairs])):
+          let pair = ast[:pairs][i]
+          | let key_v = mq_eval(pair[:key], value, cur_env)[:val]
+          | let val_v = mq_eval(pair[:val], value, cur_env)[:val]
+          | d = set(d, key_v, val_v)
+          | i += 1
+        end
+      | {val: d, env: cur_env}
+    end
+
+    elif (k == "idx") do
+      let br = mq_eval(ast[:base], value, env)
+      | let ir = mq_eval(ast[:index], value, br[:env])
+      | {val: br[:val][ir[:val]], env: ir[:env]}
+    end
+
+    elif (k == "dkey") do
+      let br = mq_eval(ast[:base], value, env)
+      | {val: br[:val][ast[:key]], env: br[:env]}
+    end
+
+    elif (k == "slice") do
+      let br = mq_eval(ast[:base], value, env)
+      | let fr = mq_eval(ast[:from], value, br[:env])
+      | let tr = if (is_none(ast[:to])): {val: len(br[:val]), env: fr[:env]}
+                 else: mq_eval(ast[:to], value, fr[:env])
+      | {val: br[:val][fr[:val]:tr[:val]], env: tr[:env]}
+    end
+
+    else:
+      error("Unknown AST kind: " + to_string(k))
+end
+
+# ── if / elif / else ──────────────────────────────────────────────────────────
+
+def _eval_if_node(ast, value, env):
+  let cond_val = mq_eval(ast[:cond], value, env)[:val]
+  | if (cond_val):
+      mq_eval(ast[:then], value, env)
+    else:
+      _eval_elifs(ast[:elifs], ast[:else_br], value, env)
+end
+
+## unless (cond): body -- runs body only when cond is false, else yields None.
+def _eval_unless(ast, value, env):
+  let cond_val = mq_eval(ast[:cond], value, env)[:val]
+  | if (!cond_val):
+      mq_eval(ast[:body], value, env)
+    else:
+      {val: None, env: env}
+end
+
+def _eval_elifs(elifs, else_node, value, env):
+  if (is_empty(elifs)) do
+    if (!is_none(else_node)):
+      mq_eval(else_node, value, env)
+    else:
+      {val: None, env: env}
+  end else do
+    let e = first(elifs)
+    | let cv = mq_eval(e[:cond], value, env)[:val]
+    | if (cv):
+        mq_eval(e[:body], value, env)
+      else:
+        _eval_elifs(elifs[1:], else_node, value, env)
+  end
+end
+
+# ── while loop ────────────────────────────────────────────────────────────────
+
+def _eval_while(ast, value, env):
+  var cur_env = env
+  | var cur_val = value
+  | var cond = mq_eval(ast[:cond], cur_val, cur_env)[:val]
+  | while (cond):
+      let br = mq_eval(ast[:body], cur_val, cur_env)
+      | let c = _ctrl(br)
+      | cur_env = br[:env]
+      | if (c == "break") do
+          cur_val = br[:val]
+          | cond = false
+        end
+        elif (c == "continue") do
+          cond = mq_eval(ast[:cond], cur_val, cur_env)[:val]
+        end
+        else do
+          cur_val = br[:val]
+          | cond = mq_eval(ast[:cond], cur_val, cur_env)[:val]
+        end
+    end
+  | {val: cur_val, env: cur_env}
+end
+
+# ── until loop ────────────────────────────────────────────────────────────────
+
+## until (cond): body end -- loops while cond is false (inverted `while`).
+def _eval_until(ast, value, env):
+  var cur_env = env
+  | var cur_val = value
+  | var cond = !mq_eval(ast[:cond], cur_val, cur_env)[:val]
+  | while (cond):
+      let br = mq_eval(ast[:body], cur_val, cur_env)
+      | let c = _ctrl(br)
+      | cur_env = br[:env]
+      | if (c == "break") do
+          cur_val = br[:val]
+          | cond = false
+        end
+        elif (c == "continue") do
+          cond = !mq_eval(ast[:cond], cur_val, cur_env)[:val]
+        end
+        else do
+          cur_val = br[:val]
+          | cond = !mq_eval(ast[:cond], cur_val, cur_env)[:val]
+        end
+    end
+  | {val: cur_val, env: cur_env}
+end
+
+# ── foreach loop ──────────────────────────────────────────────────────────────
+
+## Uses the host's own `foreach` (rather than a manual `var results = [] |
+## while(...): results += [...] end` loop) so the accumulator gets the VM's
+## dedicated collect-in-place fast path instead of a fresh array copy on every
+## iteration -- the difference is O(n) vs. O(n²) for large inputs. `break`
+## inside the host foreach genuinely stops iterating (not just a cheap
+## per-item skip), so it also short-circuits the interpreted loop for free.
+def _eval_foreach(ast, value, env):
+  let iter_val = mq_eval(ast[:iter], value, env)[:val]
+  | var cur_env = env
+  | var broke = false
+  | var brk_val = None
+  | let results = foreach (item, iter_val):
+      let loop_env = _env_set(cur_env, ast[:iter_var], item)
+      | let br = mq_eval(ast[:body], item, loop_env)
+      | let c = _ctrl(br)
+      | cur_env = br[:env]
+      | if (c == "break") do
+          brk_val = br[:val]
+          | broke = true
+          | break
+        end
+        elif (c == "continue"):
+          continue
+        else:
+          br[:val]
+    end
+  | if (broke): {val: brk_val, env: cur_env}
+    else: {val: results, env: cur_env}
+end
+
+## Top-level eval: returns just the value (not the {val,env} pair).
+def mq_eval_v(ast, value, env):
+  mq_eval(ast, value, env)[:val]
+end

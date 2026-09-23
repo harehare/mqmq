@@ -1,0 +1,220 @@
+# mqmq/eval_tests.mq
+# Tests for the mqmq evaluator, run with `mq-test eval_tests.mq`.
+
+import "lexer"
+| import "parser"
+| import "eval"
+| include "test"
+
+def _run(q, md):
+  let toks = lexer::lex(q)
+  | let ast = parser::mq_parse(toks)
+  | eval::mq_eval(ast, md, {__nodes__: md})[:val]
+end
+
+# -- literals / arithmetic / comparison / boolean --
+
+# @parametrize([
+#   ["\"hello\"", "", "hello"],
+#   ["42", "", 42],
+#   ["true", "", true],
+#   ["\"a\" + \"b\"", "", "ab"],
+#   ["1 + 2", "", 3],
+#   ["3 * 4", "", 12],
+#   ["10 - 3", "", 7],
+#   ["10 / 2", "", 5],
+#   ["1 == 1", "", true],
+#   ["1 != 2", "", true],
+#   ["1 < 2", "", true],
+#   ["2 > 1", "", true],
+#   ["true && true", "", true],
+#   ["false || true", "", true],
+#   ["!false", "", true],
+# ])
+def test_eval_literal_or_operator(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- control flow --
+
+# @parametrize([
+#   ["if (true): 1 else: 2", "", 1],
+#   ["if (false): 1 else: 2", "", 2],
+#   ["let x = 5 | x", "", 5],
+#   ["let x = 3 | x * x", "", 9],
+#   ["1 + 2 | to_string", "", "3"],
+#   ["(2 + 3) * 4", "", 20],
+#   ["var i = 0 | while (i < 5): i += 1 end | i", "", 5],
+#   ["var i = 0 | until (i >= 5): i += 1 end | i", "", 5],
+#   ["var i = 0 | until (false): i += 1 | if (i == 3): break i end end", "", 3],
+#   ["unless (1 == 2): \"ran\"", "", "ran"],
+#   ["unless (1 == 1): \"ran\"", "", None],
+#   ["foreach (x, [1,2,3]): x * 2 end", "", [2, 4, 6]],
+# ])
+def test_eval_control_flow(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- break / continue --
+
+# @parametrize([
+#   ["var i = 0 | while (true): i += 1 | if (i == 5): break i end end", "", 5],
+#   ["var i = 0 | var s = 0 | while (i < 10): i += 1 | if (i % 2 == 0): continue else do s += i end end | s", "", 25],
+#   ["foreach (x, [1,2,3,4,5]): if (x == 3): break \"stopped\" else: x end end", "", "stopped"],
+#   ["foreach (x, [1,2,3,4,5]): if (x == 3): continue else: x end end", "", [1, 2, 4, 5]],
+# ])
+def test_eval_break_continue(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- try / catch --
+
+# @parametrize([
+#   ["try: error(\"boom\") catch: \"caught\"", "", "caught"],
+#   ["try: 1 + 1 catch: \"caught\"", "", 2],
+#   ["try: error(\"boom\") catch(e): e[:message]", "", "boom"],
+# ])
+def test_eval_try_catch(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- coalesce / regex match / shift --
+
+# @parametrize([
+#   ["None ?? \"fallback\"", "", "fallback"],
+#   ["\"x\" ?? \"fallback\"", "", "x"],
+#   ["\"abc\" =~ \"a.c\"", "", true],
+#   ["\"abc\" !~ \"zzz\"", "", true],
+#   ["2 << 3", "", 16],
+#   ["16 >> 3", "", 2],
+# ])
+def test_eval_coalesce_regex_shift(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- string interpolation --
+
+# @parametrize([
+#   ["let x = 5 | s\"val=${x}\"", "", "val=5"],
+#   ["s\"sum=${1+2}\"", "", "sum=3"],
+#   ["s\"plain text\"", "", "plain text"],
+# ])
+def test_eval_string_interp(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- nodes keyword --
+
+# @parametrize([
+#   ["nodes", [1, 2, 3], [1, 2, 3]],
+#   ["let x = 1 | nodes", [1, 2, 3], [1, 2, 3]],
+# ])
+def test_eval_nodes_keyword(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- ?? / .. precedence (?? and .. bind tighter than + * etc, like real mq) --
+
+# @parametrize([
+#   ["5 ?? 2 + 3", "", 8],
+#   ["5 ?? 2 * 3", "", 15],
+#   ["1..5", "", [1, 2, 3, 4, 5]],
+# ])
+def test_eval_precedence(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- @ conversion operator --
+
+# @parametrize([
+#   ["\"Hello\" @ :h1", "", "# Hello"],
+#   ["\"Hello\" @ \"##\"", "", "## Hello"],
+#   ["\"note\" @ \">\"", "", "> note"],
+#   ["\"item\" @ \"-\"", "", "- item"],
+#   ["\"old\" @ \"~~\"", "", "~~old~~"],
+#   ["\"hello\" @ :base64", "", "aGVsbG8="],
+#   ["\"mq\" @ \"https://mqlang.org\"", "", "[mq](https://mqlang.org)"],
+# ])
+def test_eval_convert(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- ? error-suppression / //= floor-div-assign --
+
+# @parametrize([
+#   ["error(\"boom\")? == None", "", true],
+#   ["1 + error(\"boom\")?", "", 1],
+#   ["var x = 7 | x //= 2 | x", "", 3],
+# ])
+def test_eval_error_suppress_and_floor_div(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- default parameters --
+
+# @parametrize([
+#   ["def greet(name, greeting=\"Hi\"): greeting + \" \" + name end | greet(\"Bob\")", "", "Hi Bob"],
+#   ["def greet(name, greeting=\"Hi\"): greeting + \" \" + name end | greet(\"Bob\", \"Hello\")", "", "Hello Bob"],
+#   ["let f = fn(x, factor=2): x * factor end | f(10)", "", 20],
+# ])
+def test_eval_default_param(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- destructuring --
+
+# @parametrize([
+#   ["let [a, b] = [1, 2] | a", "", 1],
+#   ["let [head, ..tail] = [1, 2, 3] | tail", "", [2, 3]],
+#   ["let {name, age} = {\"name\": \"Alice\", \"age\": 30} | name", "", "Alice"],
+# ])
+def test_eval_destructure(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- match expression --
+
+# @parametrize([
+#   ["let v = 2 | match (v): | 1: \"one\" | 2: \"two\" | _: \"other\" end", "", "two"],
+#   ["let v = \"x\" | match (v): | :string: \"is string\" | :number: \"is number\" | _: \"other\" end", "", "is string"],
+#   ["let arr = [] | match (arr): | []: \"empty\" | [x]: x | [head, ..tail]: head end", "", "empty"],
+#   ["let arr = [1,2,3] | match (arr): | []: \"empty\" | [x]: x | [head, ..tail]: head end", "", 1],
+#   ["let obj = {\"name\": \"Alice\", \"age\": 30} | match (obj): | {name, age}: name | _: \"unknown\" end", "", "Alice"],
+#   ["let n = 5 | match (n): | x if (x > 0): \"positive\" | x if (x < 0): \"negative\" | _: \"zero\" end", "", "positive"],
+#   ["let x = 2 | match (x): | 1 || 2 || 3: \"small\" | 4 || 5: \"medium\" | _: \"other\" end", "", "small"],
+# ])
+def test_eval_match(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- def with ; terminator / inline module + :: --
+
+# @parametrize([
+#   ["def double(x): x * 2; | double(5)", "", 10],
+#   ["module math: def add(a, b): a + b; end | math::add(5, 3)", "", 8],
+# ])
+def test_eval_def_and_module(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+def test_module_bare_name_not_leaked():
+  let ok = try: _run("module math: def add(a, b): a + b; end | add(1, 2)", "") == "unreachable"
+           catch: true
+  | assert_eq(ok, true)
+end
+
+# -- previously-broken builtins, now fixed --
+
+# @parametrize([
+#   ["unique([1,2,2,3])", "", [1, 2, 3]],
+#   ["head([1,2,3,4], 2)", "", [1, 2]],
+#   ["tail([1,2,3,4], 2)", "", [3, 4]],
+#   ["reduce([1,2,3,4], fn(acc, x): acc + x end, 0)", "", 10],
+#   ["upper(\"hi\")", "", "HI"],
+#   ["lower(\"HI\")", "", "hi"],
+#   ["min([3,1,2])", "", 1],
+#   ["max([3,1,2])", "", 3],
+# ])
+def test_eval_builtin(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
