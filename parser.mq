@@ -39,55 +39,68 @@
 #   try    {kind:"try",    body, catch_var, catch_body}  - try: ... catch: ... / catch(e): ...
 #   interp {kind:"interp", segs}              - s"...${expr}..." segments
 
+#
+# Parser functions take the token array and a cursor position, and return
+# {node, pos} with the position just past what they consumed.
+
 import "lexer"
-| let _CMP_OPS = {
-  "==": true, "!=": true, "<": true, "<=": true,
-  ">": true, ">=": true, "=~": true, "!~": true,
+## Token types that form a complete primary expression on their own.
+| let _SIMPLE_TOKENS = {
+  "num": true, "str": true, "bool": true, "none": true, "atom": true,
+  "ident": true, "sel": true, "dot": true, "istr": true,
 }
-| let _ADD_OPS = {"+": true, "-": true, "<<": true, ">>": true}
-| let _MUL_OPS = {"*": true, "/": true, "%": true, "@": true}
-| let _RANGE_OPS = {"??": true, "..": true}
+| let _LIST_CLOSERS = {",": true, ")": true, "]": true, "}": true}
+## Binding power of each binary operator, lowest first. `!` sits between
+## `&&` (2) and the comparisons (3); see _parse_binary. `??` and `..` bind
+## tighter than the arithmetic operators in real mq (e.g. `5 ?? 2 * 3` is
+## `(5 ?? 2) * 3`).
+| let _BIN_PREC = {
+  "||": 1,
+  "&&": 2,
+  "==": 3, "!=": 3, "<": 3, "<=": 3, ">": 3, ">=": 3, "=~": 3, "!~": 3,
+  "+": 4, "-": 4, "<<": 4, ">>": 4,
+  "*": 5, "/": 5, "%": 5, "@": 5,
+  "??": 6, "..": 6,
+}
 |
 
-# ── state helpers ─────────────────────────────────────────────────────────────
+# ── cursor helpers ────────────────────────────────────────────────────────────
 
-def _mk_st(tokens):  {toks: tokens, pos: 0} end
-def _cur(st):        st[:toks][st[:pos]]    end
-def _adv(st):        set(st, :pos, st[:pos] + 1) end
-def _at_v(st, v):    _cur(st)[:v] == v      end
-def _at_t(st, t):    _cur(st)[:t] == t      end
-def _at_eof(st):     _cur(st)[:t] == "eof"  end
+def _at_v(toks, pos, v):  toks[pos][:v] == v       end
+def _at_eof(toks, pos):   toks[pos][:t] == "eof"   end
 
 ## Like _at_v, but also requires the token to be an "op" token -- otherwise a
 ## string literal whose contents happen to equal an operator symbol (e.g.
 ## `"-"`, `"+"`) would be misread as that operator.
-def _at_op(st, v):
-  let tok = _cur(st)
+def _at_op(toks, pos, v):
+  let tok = toks[pos]
   | tok[:t] == "op" && tok[:v] == v
 end
 
-def _at_any_op(st, ops):
-  let tok = _cur(st)
-  | tok[:t] == "op" && !is_none(ops[tok[:v]])
+def _peekn(toks, pos, n):
+  let p = pos + n
+  | if (p < len(toks)): toks[p] else: {t: "eof", v: ""}
 end
 
-def _peekn(st, n):
-  let p = st[:pos] + n
-  | if (p < len(st[:toks])): st[:toks][p] else: {t: "eof", v: ""}
+## Skip an optional token, returning the position after it.
+def _skip_v(toks, pos, v):
+  if (toks[pos][:v] == v): pos + 1 else: pos
 end
 
-def _expect_v(st, v):
-  let tok = _cur(st)
+## Require a token value, returning the position after it.
+def _expect_v(toks, pos, v):
+  let tok = toks[pos]
   | if (tok[:v] == v):
-      {tok: tok, st: _adv(st)}
+      pos + 1
     else:
       error("Expected '" + to_string(v) + "' but got '" + to_string(tok[:v]) + "'")
 end
 
-def _expect_t(st, t):
-  let tok = _cur(st)
+## Require a token type, returning the token.
+def _expect_t(toks, pos, t):
+  let tok = toks[pos]
   | if (tok[:t] == t):
-      {tok: tok, st: _adv(st)}
+      tok
     else:
       error("Expected type '" + t + "' but got '" + tok[:t] + "'")
 end
@@ -100,292 +113,246 @@ end
 
 ## Parse a token list produced by lex() and return the root AST node.
 def mq_parse(tokens):
-  let st = _mk_st(tokens)
-  | _parse_pipe_list(st)[:node]
+  _parse_pipe_list(tokens, 0)[:node]
 end
 
 # ── pipe list ─────────────────────────────────────────────────────────────────
 
-def _parse_pipe_list(st):
-  let first_r = _parse_stmt(st)
+def _parse_pipe_list(toks, pos):
+  let first_r = _parse_stmt(toks, pos)
   | var node = first_r[:node]
-  | var cur  = first_r[:st]
-  | while (_at_op(cur, "|")):
-      let rr = _parse_stmt(_adv(cur))
+  | var cur  = first_r[:pos]
+  | while (_at_op(toks, cur, "|")):
+      let rr = _parse_stmt(toks, cur + 1)
       | node = {kind: "pipe", left: node, right: rr[:node]}
-      | cur = rr[:st]
+      | cur = rr[:pos]
     end
-  | {node: node, st: cur}
+  | {node: node, pos: cur}
 end
 
 # ── statement dispatch ────────────────────────────────────────────────────────
 
-def _parse_stmt(st):
-  let tok = _cur(st)
-  | if (tok[:t] == "kw"):
-      if (tok[:v] == "let"):     _parse_let(st)
-        elif (tok[:v] == "var"):     _parse_var_decl(st)
-        elif (tok[:v] == "def"):     _parse_def(st)
-        elif (tok[:v] == "if"):      _parse_if(st)
-        elif (tok[:v] == "do"):      _parse_do(st)
-        elif (tok[:v] == "while"):   _parse_while(st)
-        elif (tok[:v] == "until"):   _parse_until(st)
-        elif (tok[:v] == "foreach"): _parse_foreach(st)
-        elif (tok[:v] == "break"):   _parse_break(st)
-        elif (tok[:v] == "continue"): {node: {kind: "continue"}, st: _adv(st)}
-        elif (tok[:v] == "try"):     _parse_try(st)
-        elif (tok[:v] == "match"):   _parse_match(st)
-        elif (tok[:v] == "module"):  _parse_module(st)
-        else: _parse_expr(st)
-    elif (tok[:t] == "ident" && _is_assign_op(_peekn(st, 1)[:v])):
-      _parse_assign(st)
+def _parse_stmt(toks, pos):
+  let tok = toks[pos]
+  | if (tok[:t] == "kw") do
+      let v = tok[:v]
+      | if (v == "let"):     _parse_let(toks, pos)
+        elif (v == "var"):     _parse_var_decl(toks, pos)
+        elif (v == "def"):     _parse_def(toks, pos)
+        elif (v == "if"):      _parse_if(toks, pos)
+        elif (v == "do"):      _parse_do(toks, pos)
+        elif (v == "while"):   _parse_while(toks, pos)
+        elif (v == "until"):   _parse_until(toks, pos)
+        elif (v == "foreach"): _parse_foreach(toks, pos)
+        elif (v == "break"):   _parse_break(toks, pos)
+        elif (v == "continue"): {node: {kind: "continue"}, pos: pos + 1}
+        elif (v == "try"):     _parse_try(toks, pos)
+        elif (v == "match"):   _parse_match(toks, pos)
+        elif (v == "module"):  _parse_module(toks, pos)
+        else: _parse_expr(toks, pos)
+    end
+    elif (tok[:t] == "ident" && _is_assign_op(_peekn(toks, pos, 1)[:v])):
+      _parse_assign(toks, pos)
     else:
-      _parse_expr(st)
+      _parse_expr(toks, pos)
 end
 
 # ── let / var / assign ────────────────────────────────────────────────────────
 
 # Array pattern: [a, b] or [head, ..tail]
-def _parse_array_pattern(st):
-  let st2 = _adv(st)
-  | var names = []
+def _parse_array_pattern(toks, pos):
+  var names = []
   | var rest = None
-  | var cur = st2
-  | while (!_at_v(cur, "]") && !_at_eof(cur)):
-      if (_at_op(cur, "..")) do
-          let idr = _expect_t(_adv(cur), "ident")
-          | rest = idr[:tok][:v]
-          | cur = idr[:st]
+  | var cur = pos + 1
+  | while (!_at_v(toks, cur, "]") && !_at_eof(toks, cur)):
+      if (_at_op(toks, cur, "..")) do
+          rest = _expect_t(toks, cur + 1, "ident")[:v]
+          | cur = cur + 2
         end
       else do
-          let idr = _expect_t(cur, "ident")
-          | names += [idr[:tok][:v]]
-          | cur = idr[:st]
+          names += [_expect_t(toks, cur, "ident")[:v]]
+          | cur = cur + 1
         end
-      | if (_at_v(cur, ",")):
-          cur = _adv(cur)
+      | cur = _skip_v(toks, cur, ",")
     end
-  | let st3 = _expect_v(cur, "]")[:st]
-  | {node: {kind: "arraypat", names: names, rest: rest}, st: st3}
+  | {node: {kind: "arraypat", names: names, rest: rest}, pos: _expect_v(toks, cur, "]")}
 end
 
 # Dict pattern (shorthand bind): {name, age}
-def _parse_dict_pattern(st):
-  let st2 = _adv(st)
-  | var names = []
-  | var cur = st2
-  | while (!_at_v(cur, "}") && !_at_eof(cur)):
-      let idr = _expect_t(cur, "ident")
-      | names += [idr[:tok][:v]]
-      | cur = idr[:st]
-      | if (_at_v(cur, ",")):
-          cur = _adv(cur)
+def _parse_dict_pattern(toks, pos):
+  var names = []
+  | var cur = pos + 1
+  | while (!_at_v(toks, cur, "}") && !_at_eof(toks, cur)):
+      names += [_expect_t(toks, cur, "ident")[:v]]
+      | cur = _skip_v(toks, cur + 1, ",")
     end
-  | let st3 = _expect_v(cur, "}")[:st]
-  | {node: {kind: "dictpat", names: names}, st: st3}
+  | {node: {kind: "dictpat", names: names}, pos: _expect_v(toks, cur, "}")}
 end
 
-def _parse_destructure_pattern(st):
-  if (_at_v(st, "[")): _parse_array_pattern(st)
-  else: _parse_dict_pattern(st)
+def _parse_destructure_pattern(toks, pos):
+  if (_at_v(toks, pos, "[")): _parse_array_pattern(toks, pos)
+  else: _parse_dict_pattern(toks, pos)
 end
 
-def _parse_let(st):
-  let st2 = _adv(st)
-  | if (_at_v(st2, "[") || _at_v(st2, "{")) do
-      let pr = _parse_destructure_pattern(st2)
-      | let st3 = _expect_v(pr[:st], "=")[:st]
-      | let vr = _parse_expr(st3)
-      | {node: {kind: "let_destructure", pattern: pr[:node], val: vr[:node]}, st: vr[:st]}
+def _parse_let(toks, pos):
+  _parse_binding(toks, pos, "let", "let_destructure")
+end
+
+def _parse_var_decl(toks, pos):
+  _parse_binding(toks, pos, "var", "var_destructure")
+end
+
+## `let`/`var` share their grammar: a name or destructuring pattern, `=`, and
+## a value expression.
+def _parse_binding(toks, pos, kind, destructure_kind):
+  let p2 = pos + 1
+  | if (_at_v(toks, p2, "[") || _at_v(toks, p2, "{")) do
+      let pr = _parse_destructure_pattern(toks, p2)
+      | let vr = _parse_expr(toks, _expect_v(toks, pr[:pos], "="))
+      | {node: {kind: destructure_kind, pattern: pr[:node], val: vr[:node]}, pos: vr[:pos]}
     end
   else do
-    let nr = _expect_t(st2, "ident")
-    | let st3 = _expect_v(nr[:st], "=")[:st]
-    | let vr = _parse_expr(st3)
-    | {node: {kind: "let", name: nr[:tok][:v], val: vr[:node]}, st: vr[:st]}
+    let name = _expect_t(toks, p2, "ident")[:v]
+    | let vr = _parse_expr(toks, _expect_v(toks, p2 + 1, "="))
+    | {node: {kind: kind, name: name, val: vr[:node]}, pos: vr[:pos]}
   end
 end
 
-def _parse_var_decl(st):
-  let st2 = _adv(st)
-  | if (_at_v(st2, "[") || _at_v(st2, "{")) do
-      let pr = _parse_destructure_pattern(st2)
-      | let st3 = _expect_v(pr[:st], "=")[:st]
-      | let vr = _parse_expr(st3)
-      | {node: {kind: "var_destructure", pattern: pr[:node], val: vr[:node]}, st: vr[:st]}
-    end
-  else do
-    let nr = _expect_t(st2, "ident")
-    | let st3 = _expect_v(nr[:st], "=")[:st]
-    | let vr = _parse_expr(st3)
-    | {node: {kind: "var", name: nr[:tok][:v], val: vr[:node]}, st: vr[:st]}
-  end
-end
-
-def _parse_assign(st):
-  let ntok = _cur(st)
-  | let otok = _cur(_adv(st))
-  | let vr   = _parse_expr(_adv(_adv(st)))
-  | {node: {kind: "assign", name: ntok[:v], op: otok[:v], val: vr[:node]}, st: vr[:st]}
+def _parse_assign(toks, pos):
+  let vr = _parse_expr(toks, pos + 2)
+  | {node: {kind: "assign", name: toks[pos][:v], op: toks[pos + 1][:v], val: vr[:node]}, pos: vr[:pos]}
 end
 
 # ── def ───────────────────────────────────────────────────────────────────────
 
-def _parse_def(st):
-  let st2 = _adv(st)
-  | let nr  = _expect_t(st2, "ident")
-  | let st3 = _expect_v(nr[:st], "(")[:st]
-  | let pr  = _parse_params(st3)
-  | let st4 = _expect_v(pr[:st], ")")[:st]
-  | let body_st = if (_at_v(st4, ":")): _adv(st4)
-                  elif (_at_v(st4, "do")): _adv(st4)
-                  else: st4
-  | let br  = _parse_pipe_list(body_st)
-  | let st5 = if (_at_v(br[:st], ";")): _adv(br[:st]) else: _expect_v(br[:st], "end")[:st]
-  | {node: {kind: "def", name: nr[:tok][:v], params: pr[:params], body: br[:node]}, st: st5}
+def _parse_def(toks, pos):
+  let name = _expect_t(toks, pos + 1, "ident")[:v]
+  | let pr  = _parse_params(toks, _expect_v(toks, pos + 2, "("))
+  | let p4  = _expect_v(toks, pr[:pos], ")")
+  | let body_pos = if (_at_v(toks, p4, ":") || _at_v(toks, p4, "do")): p4 + 1 else: p4
+  | let br  = _parse_pipe_list(toks, body_pos)
+  | let p5  = if (_at_v(toks, br[:pos], ";")): br[:pos] + 1 else: _expect_v(toks, br[:pos], "end")
+  | {node: {kind: "def", name: name, params: pr[:params], body: br[:node]}, pos: p5}
 end
 
-def _parse_params(st):
+def _parse_params(toks, pos):
   var params = []
-  | var cur = st
-  | while (!_at_v(cur, ")") && !_at_eof(cur)):
-      let pr = _expect_t(cur, "ident")
-      | cur = pr[:st]
+  | var cur = pos
+  | while (!_at_v(toks, cur, ")") && !_at_eof(toks, cur)):
+      let name = _expect_t(toks, cur, "ident")[:v]
+      | cur = cur + 1
       | var default_node = None
-      | if (_at_v(cur, "=")) do
-          let sv = _parse_expr(_adv(cur))
+      | if (_at_v(toks, cur, "=")) do
+          let sv = _parse_expr(toks, cur + 1)
           | default_node = sv[:node]
-          | cur = sv[:st]
+          | cur = sv[:pos]
         end
-      | params += [{name: pr[:tok][:v], default: default_node}]
-      | if (_at_v(cur, ",")):
-          cur = _adv(cur)
+      | params += [{name: name, default: default_node}]
+      | cur = _skip_v(toks, cur, ",")
     end
-  | {params: params, st: cur}
+  | {params: params, pos: cur}
 end
 
 # ── if / elif / else ──────────────────────────────────────────────────────────
 
-def _parse_if(st):
-  let st2 = _adv(st)
-  | let st3 = _expect_v(st2, "(")[:st]
-  | let cr  = _parse_pipe_list(st3)
-  | let st4 = _expect_v(cr[:st], ")")[:st]
-  | let body_st = if (_at_v(st4, ":")): _adv(st4) else: st4
-  | let tr  = _parse_if_body(body_st)
-  | var elifs = []
-  | var cur = tr[:st]
-  | while (_at_v(cur, "elif")):
-      let se   = _adv(cur)
-      | let sep = _expect_v(se, "(")[:st]
-      | let ec  = _parse_pipe_list(sep)
-      | let sec = _expect_v(ec[:st], ")")[:st]
-      | let eb_st = if (_at_v(sec, ":")): _adv(sec) else: sec
-      | let eb  = _parse_if_body(eb_st)
-      | elifs += [{cond: ec[:node], body: eb[:node]}]
-      | cur = eb[:st]
-    end
-  | let else_res = _parse_opt_else(cur)
-  | {node: {kind: "if", cond: cr[:node], then: tr[:node], elifs: elifs, else_br: else_res[:node]}, st: else_res[:st]}
+## `(cond)` followed by an optional `:`; returns the condition and the
+## position of the body.
+def _parse_cond(toks, pos):
+  let cr = _parse_pipe_list(toks, _expect_v(toks, pos, "("))
+  | {node: cr[:node], pos: _skip_v(toks, _expect_v(toks, cr[:pos], ")"), ":")}
 end
 
-def _parse_opt_else(cur):
-  if (_at_v(cur, "else")) do
-      let se   = _adv(cur)
-      | let eb_st = if (_at_v(se, ":")): _adv(se) else: se
-      | _parse_if_body(eb_st)
+def _parse_if(toks, pos):
+  let cr = _parse_cond(toks, pos + 1)
+  | let tr = _parse_if_body(toks, cr[:pos])
+  | var elifs = []
+  | var cur = tr[:pos]
+  | while (_at_v(toks, cur, "elif")):
+      let ec = _parse_cond(toks, cur + 1)
+      | let eb = _parse_if_body(toks, ec[:pos])
+      | elifs += [{cond: ec[:node], body: eb[:node]}]
+      | cur = eb[:pos]
     end
+  | let else_res = _parse_opt_else(toks, cur)
+  | {node: {kind: "if", cond: cr[:node], then: tr[:node], elifs: elifs, else_br: else_res[:node]}, pos: else_res[:pos]}
+end
+
+def _parse_opt_else(toks, cur):
+  if (_at_v(toks, cur, "else")):
+    _parse_if_body(toks, _skip_v(toks, cur + 1, ":"))
   else:
-    {node: None, st: cur}
+    {node: None, pos: cur}
 end
 
 ## unless (cond): expr -- single-branch conditional that runs when `cond` is
 ## false (inverted single-branch `if`, no `end`, no `elif`/`else`).
-def _parse_unless(st):
-  let st2 = _adv(st)
-  | let st3 = _expect_v(st2, "(")[:st]
-  | let cr  = _parse_pipe_list(st3)
-  | let st4 = _expect_v(cr[:st], ")")[:st]
-  | let body_st = if (_at_v(st4, ":")): _adv(st4) else: st4
-  | let br  = _parse_if_body(body_st)
-  | {node: {kind: "unless", cond: cr[:node], body: br[:node]}, st: br[:st]}
+def _parse_unless(toks, pos):
+  let cr = _parse_cond(toks, pos + 1)
+  | let br = _parse_if_body(toks, cr[:pos])
+  | {node: {kind: "unless", cond: cr[:node], body: br[:node]}, pos: br[:pos]}
 end
 
-def _parse_if_body(st):
-  let tok = _cur(st)
-  | if (_at_v(st, "do")): _parse_do(st)
-    elif (tok[:v] == "break"): _parse_break(st)
-    elif (tok[:v] == "continue"): {node: {kind: "continue"}, st: _adv(st)}
-    elif (tok[:v] == "try"): _parse_try(st)
-    else: _parse_expr(st)
+def _parse_if_body(toks, pos):
+  let v = toks[pos][:v]
+  | if (v == "do"): _parse_do(toks, pos)
+    elif (v == "break"): _parse_break(toks, pos)
+    elif (v == "continue"): {node: {kind: "continue"}, pos: pos + 1}
+    elif (v == "try"): _parse_try(toks, pos)
+    else: _parse_expr(toks, pos)
 end
 
 # ── do ────────────────────────────────────────────────────────────────────────
 
-def _parse_do(st):
-  let st2 = _adv(st)
-  | let br = _parse_pipe_list(st2)
-  | let st3 = _expect_v(br[:st], "end")[:st]
-  | {node: {kind: "do", body: br[:node]}, st: st3}
+def _parse_do(toks, pos):
+  let br = _parse_pipe_list(toks, pos + 1)
+  | {node: {kind: "do", body: br[:node]}, pos: _expect_v(toks, br[:pos], "end")}
 end
 
 # ── while ─────────────────────────────────────────────────────────────────────
 
-def _parse_while(st):
-  let st2 = _adv(st)
-  | let st3 = _expect_v(st2, "(")[:st]
-  | let cr  = _parse_pipe_list(st3)
-  | let st4 = _expect_v(cr[:st], ")")[:st]
-  | let body_st = if (_at_v(st4, ":")): _adv(st4) else: st4
-  | let br  = _parse_pipe_list(body_st)
-  | let st5 = _expect_v(br[:st], "end")[:st]
-  | {node: {kind: "while", cond: cr[:node], body: br[:node]}, st: st5}
+def _parse_while(toks, pos):
+  _parse_cond_loop(toks, pos, "while")
 end
 
 # ── until ─────────────────────────────────────────────────────────────────────
 
 ## until (cond): body end -- loops while `cond` is false (inverted `while`).
-def _parse_until(st):
-  let st2 = _adv(st)
-  | let st3 = _expect_v(st2, "(")[:st]
-  | let cr  = _parse_pipe_list(st3)
-  | let st4 = _expect_v(cr[:st], ")")[:st]
-  | let body_st = if (_at_v(st4, ":")): _adv(st4) else: st4
-  | let br  = _parse_pipe_list(body_st)
-  | let st5 = _expect_v(br[:st], "end")[:st]
-  | {node: {kind: "until", cond: cr[:node], body: br[:node]}, st: st5}
+def _parse_until(toks, pos):
+  _parse_cond_loop(toks, pos, "until")
+end
+
+def _parse_cond_loop(toks, pos, kind):
+  let cr = _parse_cond(toks, pos + 1)
+  | let br = _parse_pipe_list(toks, cr[:pos])
+  | {node: {kind: kind, cond: cr[:node], body: br[:node]}, pos: _expect_v(toks, br[:pos], "end")}
 end
 
 # ── foreach ───────────────────────────────────────────────────────────────────
 
-def _parse_foreach(st):
-  let st2 = _adv(st)
-  | let st3 = _expect_v(st2, "(")[:st]
-  | let vr  = _expect_t(st3, "ident")
-  | let st4 = _expect_v(vr[:st], ",")[:st]
-  | let ir  = _parse_expr(st4)
-  | let st5 = _expect_v(ir[:st], ")")[:st]
-  | let body_st = if (_at_v(st5, ":")): _adv(st5) else: st5
-  | let br  = _parse_pipe_list(body_st)
-  | let st6 = _expect_v(br[:st], "end")[:st]
-  | {node: {kind: "foreach", iter_var: vr[:tok][:v], iter: ir[:node], body: br[:node]}, st: st6}
+def _parse_foreach(toks, pos):
+  let p3 = _expect_v(toks, pos + 1, "(")
+  | let iter_var = _expect_t(toks, p3, "ident")[:v]
+  | let ir = _parse_expr(toks, _expect_v(toks, p3 + 1, ","))
+  | let body_pos = _skip_v(toks, _expect_v(toks, ir[:pos], ")"), ":")
+  | let br = _parse_pipe_list(toks, body_pos)
+  | {node: {kind: "foreach", iter_var: iter_var, iter: ir[:node], body: br[:node]}, pos: _expect_v(toks, br[:pos], "end")}
 end
 
 # ── break / continue ─────────────────────────────────────────────────────────
 
-def _at_break_stop(st):
-  let tok = _cur(st)
+def _at_break_stop(toks, pos):
+  let tok = toks[pos]
   | tok[:t] == "eof" || tok[:v] == "|" || tok[:v] == "end" || tok[:v] == ")" ||
     tok[:v] == "elif" || tok[:v] == "else" || tok[:v] == "catch" || tok[:v] == ";"
 end
 
-def _parse_break(st):
-  let st2 = _adv(st)
-  | if (_at_break_stop(st2)):
-      {node: {kind: "break", val: None}, st: st2}
+def _parse_break(toks, pos):
+  let p2 = pos + 1
+  | if (_at_break_stop(toks, p2)):
+      {node: {kind: "break", val: None}, pos: p2}
     else do
-      let vr = _parse_expr(st2)
-      | {node: {kind: "break", val: vr[:node]}, st: vr[:st]}
+      let vr = _parse_expr(toks, p2)
+      | {node: {kind: "break", val: vr[:node]}, pos: vr[:pos]}
     end
 end
 
@@ -394,25 +361,20 @@ end
 ## Optional error binder on a `catch` clause: `catch(e):` binds `e` to a
 ## `{message: ...}` dict describing the failure, scoped to the catch body.
 ## Plain `catch:` (no binder) still works and leaves `name` as None.
-def _parse_catch_binder(st):
-  if (_at_v(st, "(")) do
-      let idr = _expect_t(_adv(st), "ident")
-      | let st2 = _expect_v(idr[:st], ")")[:st]
-      | {name: idr[:tok][:v], st: st2}
+def _parse_catch_binder(toks, pos):
+  if (_at_v(toks, pos, "(")) do
+      let name = _expect_t(toks, pos + 1, "ident")[:v]
+      | {name: name, pos: _expect_v(toks, pos + 2, ")")}
     end
   else:
-    {name: None, st: st}
+    {name: None, pos: pos}
 end
 
-def _parse_try(st):
-  let st2 = _adv(st)
-  | let body_st = if (_at_v(st2, ":")): _adv(st2) else: st2
-  | let tr = _parse_if_body(body_st)
-  | let st3 = _expect_v(tr[:st], "catch")[:st]
-  | let binder = _parse_catch_binder(st3)
-  | let cb_st = if (_at_v(binder[:st], ":")): _adv(binder[:st]) else: binder[:st]
-  | let cr = _parse_if_body(cb_st)
-  | {node: {kind: "try", body: tr[:node], catch_var: binder[:name], catch_body: cr[:node]}, st: cr[:st]}
+def _parse_try(toks, pos):
+  let tr = _parse_if_body(toks, _skip_v(toks, pos + 1, ":"))
+  | let binder = _parse_catch_binder(toks, _expect_v(toks, tr[:pos], "catch"))
+  | let cr = _parse_if_body(toks, _skip_v(toks, binder[:pos], ":"))
+  | {node: {kind: "try", body: tr[:node], catch_var: binder[:name], catch_body: cr[:node]}, pos: cr[:pos]}
 end
 
 # ── match / pattern matching ────────────────────────────────────────────────────
@@ -421,70 +383,63 @@ end
 ##   | pattern [if (guard)]: body
 ##   | ...
 ## end
-def _parse_match(st):
-  let st2 = _adv(st)
-  | let st3 = _expect_v(st2, "(")[:st]
-  | let vr  = _parse_expr(st3)
-  | let st4 = _expect_v(vr[:st], ")")[:st]
-  | let st5 = if (_at_v(st4, ":")): _adv(st4) else: st4
-  | let ar  = _parse_match_arms(st5)
-  | let st6 = _expect_v(ar[:st], "end")[:st]
-  | {node: {kind: "match", val: vr[:node], arms: ar[:arms]}, st: st6}
+def _parse_match(toks, pos):
+  let vr = _parse_expr(toks, _expect_v(toks, pos + 1, "("))
+  | let p5 = _skip_v(toks, _expect_v(toks, vr[:pos], ")"), ":")
+  | let ar = _parse_match_arms(toks, p5)
+  | {node: {kind: "match", val: vr[:node], arms: ar[:arms]}, pos: _expect_v(toks, ar[:pos], "end")}
 end
 
-def _parse_match_arms(st):
+def _parse_match_arms(toks, pos):
   var arms = []
-  | var cur = st
-  | while (_at_op(cur, "|")):
-      let pr = _parse_match_pattern(_adv(cur))
-      | let gr = if (_at_v(pr[:st], "if")) do
-                     let gst1 = _expect_v(_adv(pr[:st]), "(")[:st]
-                     | let ge  = _parse_expr(gst1)
-                     | let gst2 = _expect_v(ge[:st], ")")[:st]
-                     | {guard: ge[:node], st: gst2}
+  | var cur = pos
+  | while (_at_op(toks, cur, "|")):
+      let pr = _parse_match_pattern(toks, cur + 1)
+      | let gr = if (_at_v(toks, pr[:pos], "if")) do
+                     let ge = _parse_expr(toks, _expect_v(toks, pr[:pos] + 1, "("))
+                     | {guard: ge[:node], pos: _expect_v(toks, ge[:pos], ")")}
                    end
-                   else: {guard: None, st: pr[:st]}
-      | let bst = _expect_v(gr[:st], ":")[:st]
-      | let br  = _parse_if_body(bst)
+                   else: {guard: None, pos: pr[:pos]}
+      | let br = _parse_if_body(toks, _expect_v(toks, gr[:pos], ":"))
       | arms += [{pattern: pr[:node], guard: gr[:guard], body: br[:node]}]
-      | cur = br[:st]
+      | cur = br[:pos]
     end
-  | {arms: arms, st: cur}
+  | {arms: arms, pos: cur}
 end
 
 # Or-pattern: p1 || p2 || p3
-def _parse_match_pattern(st):
-  let pr = _parse_match_pattern_atom(st)
+def _parse_match_pattern(toks, pos):
+  let pr = _parse_match_pattern_atom(toks, pos)
   | var node = pr[:node]
-  | var cur  = pr[:st]
-  | while (_at_op(cur, "||")):
-      let rr = _parse_match_pattern_atom(_adv(cur))
+  | var cur  = pr[:pos]
+  | while (_at_op(toks, cur, "||")):
+      let rr = _parse_match_pattern_atom(toks, cur + 1)
       | node = {kind: "orpat", left: node, right: rr[:node]}
-      | cur  = rr[:st]
+      | cur  = rr[:pos]
     end
-  | {node: node, st: cur}
+  | {node: node, pos: cur}
 end
 
-def _parse_match_pattern_atom(st):
-  let tok = _cur(st)
+def _parse_match_pattern_atom(toks, pos):
+  let tok = toks[pos]
   | if (tok[:t] == "ident" && tok[:v] == "_"):
-      {node: {kind: "wildpat"}, st: _adv(st)}
+      {node: {kind: "wildpat"}, pos: pos + 1}
     elif (tok[:t] == "atom"):
-      {node: {kind: "typepat", name: tok[:v]}, st: _adv(st)}
+      {node: {kind: "typepat", name: tok[:v]}, pos: pos + 1}
     elif (tok[:t] == "num"):
-      {node: {kind: "litpat", val: {kind: "num", val: to_number(tok[:v])}}, st: _adv(st)}
+      {node: {kind: "litpat", val: {kind: "num", val: to_number(tok[:v])}}, pos: pos + 1}
     elif (tok[:t] == "str"):
-      {node: {kind: "litpat", val: {kind: "str", val: tok[:v]}}, st: _adv(st)}
+      {node: {kind: "litpat", val: {kind: "str", val: tok[:v]}}, pos: pos + 1}
     elif (tok[:t] == "bool"):
-      {node: {kind: "litpat", val: {kind: "bool", val: tok[:v] == "true"}}, st: _adv(st)}
+      {node: {kind: "litpat", val: {kind: "bool", val: tok[:v] == "true"}}, pos: pos + 1}
     elif (tok[:t] == "none"):
-      {node: {kind: "litpat", val: {kind: "none"}}, st: _adv(st)}
+      {node: {kind: "litpat", val: {kind: "none"}}, pos: pos + 1}
     elif (tok[:v] == "["):
-      _parse_array_pattern(st)
+      _parse_array_pattern(toks, pos)
     elif (tok[:v] == "{"):
-      _parse_dict_pattern(st)
+      _parse_dict_pattern(toks, pos)
     elif (tok[:t] == "ident"):
-      {node: {kind: "bindpat", name: tok[:v]}, st: _adv(st)}
+      {node: {kind: "bindpat", name: tok[:v]}, pos: pos + 1}
     else:
       error("Invalid match pattern at token: " + to_string(tok[:v]))
 end
@@ -496,13 +451,10 @@ end
 ## real mq's inline-module namespacing. Body statements must be `|`-chained
 ## like everywhere else in mqmq (real mq also allows bare newline-separated
 ## defs here; that grammar isn't replicated -- see README Known Limitations).
-def _parse_module(st):
-  let st2 = _adv(st)
-  | let nr = _expect_t(st2, "ident")
-  | let st3 = if (_at_v(nr[:st], ":")): _adv(nr[:st]) else: nr[:st]
-  | let br = _parse_pipe_list(st3)
-  | let st4 = _expect_v(br[:st], "end")[:st]
-  | {node: {kind: "module", name: nr[:tok][:v], body: br[:node]}, st: st4}
+def _parse_module(toks, pos):
+  let name = _expect_t(toks, pos + 1, "ident")[:v]
+  | let br = _parse_pipe_list(toks, _skip_v(toks, pos + 2, ":"))
+  | {node: {kind: "module", name: name, body: br[:node]}, pos: _expect_v(toks, br[:pos], "end")}
 end
 
 # ── string interpolation ──────────────────────────────────────────────────────
@@ -518,173 +470,123 @@ end
 
 # ── expression (operator precedence) ─────────────────────────────────────────
 
-def _parse_expr(st):  _parse_or(st) end
+def _parse_expr(toks, pos):  _parse_binary(toks, pos, 1) end
 
 # List items that are a single value need no operator-precedence walk. Keep
 # the normal parser for anything followed by an operator or postfix access.
-def _parse_list_expr(st):
-  let tok = _cur(st)
-  | let next = _peekn(st, 1)
-  | let simple = tok[:t] == "num" || tok[:t] == "str" || tok[:t] == "bool" ||
-                 tok[:t] == "none" || tok[:t] == "atom" || tok[:t] == "ident" ||
-                 tok[:t] == "sel" || tok[:t] == "dot" || tok[:t] == "istr"
-  | let closes = next[:t] == "op" && (next[:v] == "," || next[:v] == ")" ||
-                                       next[:v] == "]" || next[:v] == "}")
-  | if (simple && closes): _parse_primary(st) else: _parse_expr(st)
+def _parse_list_expr(toks, pos):
+  let next = _peekn(toks, pos, 1)
+  | if (next[:t] == "op" && _LIST_CLOSERS[next[:v]] && _SIMPLE_TOKENS[toks[pos][:t]]):
+      _parse_primary(toks, pos)
+    else:
+      _parse_expr(toks, pos)
 end
 
-def _parse_or(st):
-  let lr = _parse_and(st)
-  | var node = lr[:node]
-  | var cur  = lr[:st]
-  | while (_at_op(cur, "||")):
-      let rr = _parse_and(_adv(cur))
-      | node = {kind: "bin", op: "||", left: node, right: rr[:node]}
-      | cur  = rr[:st]
+## Precedence climbing over _BIN_PREC. Every level is left-associative, so
+## the right operand is parsed one level tighter than its operator. One call
+## per operand replaces a call (and a {node, pos} result) per precedence level,
+## and an operand with no following operator is returned as-is.
+def _parse_binary(toks, pos, min_prec):
+  let first = if (min_prec <= 3 && _at_op(toks, pos, "!")) do
+      let r = _parse_binary(toks, pos + 1, 3)
+      | {node: {kind: "un", op: "!", expr: r[:node]}, pos: r[:pos]}
     end
-  | {node: node, st: cur}
-end
-
-def _parse_and(st):
-  let lr = _parse_not(st)
-  | var node = lr[:node]
-  | var cur  = lr[:st]
-  | while (_at_op(cur, "&&")):
-      let rr = _parse_not(_adv(cur))
-      | node = {kind: "bin", op: "&&", left: node, right: rr[:node]}
-      | cur  = rr[:st]
+    else: _parse_unary(toks, pos)
+  | var prec = _op_prec(toks[first[:pos]])
+  | if (prec < min_prec): first
+    else do
+      var node = first[:node]
+      | var cur = first[:pos]
+      | while (prec >= min_prec):
+          let rr = _parse_binary(toks, cur + 1, prec + 1)
+          | node = {kind: "bin", op: toks[cur][:v], left: node, right: rr[:node]}
+          | cur = rr[:pos]
+          | prec = _op_prec(toks[cur])
+        end
+      | {node: node, pos: cur}
     end
-  | {node: node, st: cur}
 end
 
-def _parse_not(st):
-  if (_at_op(st, "!")) do
-    let r = _parse_not(_adv(st))
-    | {node: {kind: "un", op: "!", expr: r[:node]}, st: r[:st]}
+## Binding power of a binary operator token, or 0 for any other token.
+def _op_prec(tok):
+  if (tok[:t] == "op") do
+    let p = _BIN_PREC[tok[:v]]
+    | if (is_none(p)): 0 else: p
+  end
+  else: 0
+end
+
+def _parse_unary(toks, pos):
+  if (_at_op(toks, pos, "-")) do
+    let r = _parse_postfix(toks, pos + 1)
+    | {node: {kind: "un", op: "-", expr: r[:node]}, pos: r[:pos]}
   end
   else:
-    _parse_cmp(st)
-end
-
-def _parse_cmp(st):
-  let lr  = _parse_add(st)
-  | var node = lr[:node]
-  | var cur  = lr[:st]
-  | while (_at_any_op(cur, _CMP_OPS)):
-      let op = _cur(cur)[:v]
-      | let rr = _parse_add(_adv(cur))
-      | node = {kind: "bin", op: op, left: node, right: rr[:node]}
-      | cur  = rr[:st]
-    end
-  | {node: node, st: cur}
-end
-
-def _parse_add(st):
-  let lr = _parse_mul(st)
-  | var node = lr[:node]
-  | var cur  = lr[:st]
-  | while (_at_any_op(cur, _ADD_OPS)):
-      let op = _cur(cur)[:v]
-      | let rr = _parse_mul(_adv(cur))
-      | node = {kind: "bin", op: op, left: node, right: rr[:node]}
-      | cur  = rr[:st]
-    end
-  | {node: node, st: cur}
-end
-
-def _parse_mul(st):
-  let lr = _parse_coalesce_range(st)
-  | var node = lr[:node]
-  | var cur  = lr[:st]
-  | while (_at_any_op(cur, _MUL_OPS)):
-      let op = _cur(cur)[:v]
-      | let rr = _parse_coalesce_range(_adv(cur))
-      | node = {kind: "bin", op: op, left: node, right: rr[:node]}
-      | cur  = rr[:st]
-    end
-  | {node: node, st: cur}
-end
-
-## `??` and `..` bind tighter than the arithmetic operators in real mq
-## (e.g. `5 ?? 2 * 3` is `(5 ?? 2) * 3`), so they sit just above `_parse_mul`.
-def _parse_coalesce_range(st):
-  let lr = _parse_unary(st)
-  | var node = lr[:node]
-  | var cur  = lr[:st]
-  | while (_at_any_op(cur, _RANGE_OPS)):
-      let op = _cur(cur)[:v]
-      | let rr = _parse_unary(_adv(cur))
-      | node = {kind: "bin", op: op, left: node, right: rr[:node]}
-      | cur  = rr[:st]
-    end
-  | {node: node, st: cur}
-end
-
-def _parse_unary(st):
-  if (_at_op(st, "-")) do
-    let r = _parse_postfix(_adv(st))
-    | {node: {kind: "un", op: "-", expr: r[:node]}, st: r[:st]}
-  end
-  else:
-    _parse_postfix(st)
+    _parse_postfix(toks, pos)
 end
 
 # ── postfix (index / dict-key / call) ─────────────────────────────────────────
 
-# Handle bracket subscript: base[...] returning {node, cur}
-def _parse_subscript(base_node, cur):
-  let st2 = _adv(cur)
-  | if (_at_v(st2, ":")) do
-        let st3 = _adv(st2)
-        | let kr = _expect_t(st3, "atom")
-        | let st4 = _expect_v(kr[:st], "]")[:st]
-        | {node: {kind: "dkey", base: base_node, key: kr[:tok][:v]}, st: st4}
+# Handle bracket subscript: base[...] returning {node, pos}
+def _parse_subscript(toks, base_node, pos):
+  let p2 = pos + 1
+  | if (_at_v(toks, p2, ":")) do
+        let key = _expect_t(toks, p2 + 1, "atom")[:v]
+        | {node: {kind: "dkey", base: base_node, key: key}, pos: _expect_v(toks, p2 + 2, "]")}
       end
-    elif (_at_v(st2, "]")):
-      {node: base_node, st: _adv(st2)}
+    elif (_at_v(toks, p2, "]")):
+      {node: base_node, pos: p2 + 1}
     else:
-      _parse_index_or_slice(base_node, st2)
+      _parse_index_or_slice(toks, base_node, p2)
 end
 
-def _parse_index_or_slice(base_node, st2):
-  let ir = _parse_expr(st2)
-  | if (_at_v(ir[:st], ":")):
-      _parse_slice(base_node, ir[:node], _adv(ir[:st]))
+def _parse_index_or_slice(toks, base_node, pos):
+  let ir = _parse_expr(toks, pos)
+  | if (_at_v(toks, ir[:pos], ":")):
+      _parse_slice(toks, base_node, ir[:node], ir[:pos] + 1)
     else:
-      let st3 = _expect_v(ir[:st], "]")[:st]
-      | {node: {kind: "idx", base: base_node, index: ir[:node]}, st: st3}
+      {node: {kind: "idx", base: base_node, index: ir[:node]}, pos: _expect_v(toks, ir[:pos], "]")}
 end
 
-def _parse_slice(base_node, from_node, st3):
-  if (_at_v(st3, "]")):
-    {node: {kind: "slice", base: base_node, from: from_node, to: None}, st: _adv(st3)}
-  else:
-    let tr  = _parse_expr(st3)
-    | let st4 = _expect_v(tr[:st], "]")[:st]
-    | {node: {kind: "slice", base: base_node, from: from_node, to: tr[:node]}, st: st4}
+def _parse_slice(toks, base_node, from_node, pos):
+  if (_at_v(toks, pos, "]")):
+    {node: {kind: "slice", base: base_node, from: from_node, to: None}, pos: pos + 1}
+  else do
+    let tr = _parse_expr(toks, pos)
+    | {node: {kind: "slice", base: base_node, from: from_node, to: tr[:node]}, pos: _expect_v(toks, tr[:pos], "]")}
+  end
 end
 
-def _parse_postfix(st):
-  let br = _parse_primary(st)
-  | var node = br[:node]
-  | var cur  = br[:st]
-  | while (_at_v(cur, "[") || (_at_op(cur, "(") && node[:kind] == "ident") || _at_op(cur, "?")):
-      if (_at_v(cur, "[")) do
-          let r = _parse_subscript(node, cur)
+def _parse_postfix(toks, pos):
+  let br = _parse_primary(toks, pos)
+  | if (_at_postfix(toks[br[:pos]], br[:node])): _parse_postfix_ops(toks, br[:node], br[:pos])
+    else: br
+end
+
+def _at_postfix(tok, node):
+  tok[:v] == "[" || (tok[:t] == "op" && ((tok[:v] == "(" && node[:kind] == "ident") || tok[:v] == "?"))
+end
+
+def _parse_postfix_ops(toks, base_node, pos):
+  var node = base_node
+  | var cur  = pos
+  | while (_at_postfix(toks[cur], node)):
+      if (_at_v(toks, cur, "[")) do
+          let r = _parse_subscript(toks, node, cur)
           | node = r[:node]
-          | cur  = r[:st]
+          | cur  = r[:pos]
         end
-      elif (_at_op(cur, "?")) do
+      elif (_at_op(toks, cur, "?")) do
           node = {kind: "trysuppress", target: node}
-          | cur = _adv(cur)
+          | cur = cur + 1
         end
       else do
-          let ar = _parse_call_args(_adv(cur))
+          let ar = _parse_call_args(toks, cur + 1)
           | node = {kind: "call", name: node[:name], args: ar[:args]}
-          | cur  = ar[:st]
+          | cur  = ar[:pos]
         end
     end
-  | {node: node, st: cur}
+  | {node: node, pos: cur}
 end
 
 # Collect list elements through the host foreach accumulator. Advancing cur
@@ -692,162 +594,148 @@ end
 # This avoids copying the growing result array for every element. The empty
 # and one-item cases return before creating a range, which matters for many
 # small lists embedded in one large query.
-def _parse_call_args(st):
-  if (_at_v(st, ")")):
-    {args: [], st: _adv(st)}
+def _parse_call_args(toks, pos):
+  if (_at_v(toks, pos, ")")):
+    {args: [], pos: pos + 1}
   else do
-    let first_arg = _parse_list_expr(st)
-    | var cur = first_arg[:st]
-    | if (_at_v(cur, ",")): cur = _adv(cur)
-    | if (_at_v(cur, ")")):
-        {args: [first_arg[:node]], st: _adv(cur)}
+    let first_arg = _parse_list_expr(toks, pos)
+    | var cur = _skip_v(toks, first_arg[:pos], ",")
+    | if (_at_v(toks, cur, ")")):
+        {args: [first_arg[:node]], pos: cur + 1}
       else do
-        let rest = foreach (pos, range(cur[:pos], len(cur[:toks]) - 1)):
-          if (pos < cur[:pos]): continue
-          elif (_at_v(cur, ")") || _at_eof(cur)): break
+        let rest = foreach (i, range(cur, len(toks) - 1)):
+          if (i < cur): continue
+          elif (_at_v(toks, cur, ")") || _at_eof(toks, cur)): break
           else do
-            let ar = _parse_list_expr(cur)
-            | cur = ar[:st]
-            | if (_at_v(cur, ",")): cur = _adv(cur)
+            let ar = _parse_list_expr(toks, cur)
+            | cur = _skip_v(toks, ar[:pos], ",")
             | ar[:node]
           end
         end
-        | let st2 = _expect_v(cur, ")")[:st]
-        | {args: [first_arg[:node]] + rest, st: st2}
+        | {args: [first_arg[:node]] + rest, pos: _expect_v(toks, cur, ")")}
       end
   end
 end
 
 # ── primary ────────────────────────────────────────────────────────────────────
 
-def _parse_primary(st):
-  let tok = _cur(st)
-  | if (tok[:t] == "sel"):
-      {node: {kind: "sel",  name: tok[:v]}, st: _adv(st)}
-    elif (tok[:t] == "dot"):
-      {node: {kind: "dot"},               st: _adv(st)}
-    elif (tok[:t] == "str"):
-      {node: {kind: "str",  val: tok[:v]}, st: _adv(st)}
-    elif (tok[:t] == "istr"):
-      {node: {kind: "interp", segs: _parse_interp_segs(tok[:v])}, st: _adv(st)}
-    elif (tok[:t] == "num"):
-      {node: {kind: "num",  val: to_number(tok[:v])}, st: _adv(st)}
-    elif (tok[:t] == "bool"):
-      {node: {kind: "bool", val: tok[:v] == "true"}, st: _adv(st)}
-    elif (tok[:t] == "none"):
-      {node: {kind: "none"},               st: _adv(st)}
-    elif (tok[:t] == "atom"):
-      {node: {kind: "atom", name: tok[:v]}, st: _adv(st)}
-    elif (tok[:t] == "ident" && _peekn(st, 1)[:v] == "::" && _peekn(st, 2)[:t] == "ident"):
-      {node: {kind: "ident", name: tok[:v] + "::" + _peekn(st, 2)[:v]}, st: _adv(_adv(_adv(st)))}
-    elif (tok[:t] == "ident"):
-      {node: {kind: "ident", name: tok[:v]}, st: _adv(st)}
-    elif (tok[:t] == "kw" && tok[:v] == "fn"):
-      _parse_fn(st)
-    elif (tok[:t] == "kw" && tok[:v] == "if"):
-      _parse_if(st)
-    elif (tok[:t] == "kw" && tok[:v] == "unless"):
-      _parse_unless(st)
-    elif (tok[:t] == "kw" && tok[:v] == "do"):
-      _parse_do(st)
-    elif (tok[:t] == "kw" && tok[:v] == "self"):
-      {node: {kind: "self"}, st: _adv(st)}
-    elif (tok[:t] == "kw" && tok[:v] == "nodes"):
-      {node: {kind: "nodes"}, st: _adv(st)}
+def _parse_primary(toks, pos):
+  let tok = toks[pos]
+  | let t = tok[:t]
+  | if (t == "num"):
+      {node: {kind: "num",  val: to_number(tok[:v])}, pos: pos + 1}
+    elif (t == "ident"):
+      if (_peekn(toks, pos, 1)[:v] == "::" && _peekn(toks, pos, 2)[:t] == "ident"):
+        {node: {kind: "ident", name: tok[:v] + "::" + toks[pos + 2][:v]}, pos: pos + 3}
+      else:
+        {node: {kind: "ident", name: tok[:v]}, pos: pos + 1}
+    elif (t == "str"):
+      {node: {kind: "str",  val: tok[:v]}, pos: pos + 1}
+    elif (t == "sel"):
+      {node: {kind: "sel",  name: tok[:v]}, pos: pos + 1}
+    elif (t == "dot"):
+      {node: {kind: "dot"},               pos: pos + 1}
+    elif (t == "istr"):
+      {node: {kind: "interp", segs: _parse_interp_segs(tok[:v])}, pos: pos + 1}
+    elif (t == "bool"):
+      {node: {kind: "bool", val: tok[:v] == "true"}, pos: pos + 1}
+    elif (t == "none"):
+      {node: {kind: "none"},               pos: pos + 1}
+    elif (t == "atom"):
+      {node: {kind: "atom", name: tok[:v]}, pos: pos + 1}
+    elif (t == "kw" && tok[:v] == "fn"):
+      _parse_fn(toks, pos)
+    elif (t == "kw" && tok[:v] == "if"):
+      _parse_if(toks, pos)
+    elif (t == "kw" && tok[:v] == "unless"):
+      _parse_unless(toks, pos)
+    elif (t == "kw" && tok[:v] == "do"):
+      _parse_do(toks, pos)
+    elif (t == "kw" && tok[:v] == "self"):
+      {node: {kind: "self"}, pos: pos + 1}
+    elif (t == "kw" && tok[:v] == "nodes"):
+      {node: {kind: "nodes"}, pos: pos + 1}
     elif (tok[:v] == "("):
-      _parse_paren(st)
+      _parse_paren(toks, pos)
     elif (tok[:v] == "["):
-      _parse_array(st)
+      _parse_array(toks, pos)
     elif (tok[:v] == "{"):
-      _parse_dict(st)
+      _parse_dict(toks, pos)
     else:
-      error("Unexpected token: type=" + tok[:t] + " value='" + to_string(tok[:v]) + "'")
+      error("Unexpected token: type=" + t + " value='" + to_string(tok[:v]) + "'")
 end
 
-def _parse_paren(st):
-  let ir  = _parse_pipe_list(_adv(st))
-  | let st2 = _expect_v(ir[:st], ")")[:st]
-  | {node: ir[:node], st: st2}
+def _parse_paren(toks, pos):
+  let ir = _parse_pipe_list(toks, pos + 1)
+  | {node: ir[:node], pos: _expect_v(toks, ir[:pos], ")")}
 end
 
-def _parse_fn(st):
-  let st2 = _adv(st)
-  | let st3 = _expect_v(st2, "(")[:st]
-  | let pr  = _parse_params(st3)
-  | let st4 = _expect_v(pr[:st], ")")[:st]
-  | let body_st = if (_at_v(st4, ":")): _adv(st4) else: st4
-  | let br  = _parse_pipe_list(body_st)
-  | let st5 = if (_at_v(br[:st], ";") || _at_v(br[:st], "end")): _adv(br[:st]) else: br[:st]
-  | {node: {kind: "fn", params: pr[:params], body: br[:node]}, st: st5}
+def _parse_fn(toks, pos):
+  let pr = _parse_params(toks, _expect_v(toks, pos + 1, "("))
+  | let body_pos = _skip_v(toks, _expect_v(toks, pr[:pos], ")"), ":")
+  | let br = _parse_pipe_list(toks, body_pos)
+  | let p5 = if (_at_v(toks, br[:pos], ";") || _at_v(toks, br[:pos], "end")): br[:pos] + 1 else: br[:pos]
+  | {node: {kind: "fn", params: pr[:params], body: br[:node]}, pos: p5}
 end
 
-def _parse_array(st):
-  let st2 = _adv(st)
-  | if (_at_v(st2, "]")):
-      {node: {kind: "arr", items: []}, st: _adv(st2)}
+def _parse_array(toks, pos):
+  let p2 = pos + 1
+  | if (_at_v(toks, p2, "]")):
+      {node: {kind: "arr", items: []}, pos: p2 + 1}
     else do
-      let first_item = _parse_list_expr(st2)
-      | var cur = first_item[:st]
-      | if (_at_v(cur, ",")): cur = _adv(cur)
-      | if (_at_v(cur, "]")):
-          {node: {kind: "arr", items: [first_item[:node]]}, st: _adv(cur)}
+      let first_item = _parse_list_expr(toks, p2)
+      | var cur = _skip_v(toks, first_item[:pos], ",")
+      | if (_at_v(toks, cur, "]")):
+          {node: {kind: "arr", items: [first_item[:node]]}, pos: cur + 1}
         else do
-          let rest = foreach (pos, range(cur[:pos], len(cur[:toks]) - 1)):
-            if (pos < cur[:pos]): continue
-            elif (_at_v(cur, "]") || _at_eof(cur)): break
+          let rest = foreach (i, range(cur, len(toks) - 1)):
+            if (i < cur): continue
+            elif (_at_v(toks, cur, "]") || _at_eof(toks, cur)): break
             else do
-              let ir = _parse_list_expr(cur)
-              | cur = ir[:st]
-              | if (_at_v(cur, ",")): cur = _adv(cur)
+              let ir = _parse_list_expr(toks, cur)
+              | cur = _skip_v(toks, ir[:pos], ",")
               | ir[:node]
             end
           end
-          | let st3 = _expect_v(cur, "]")[:st]
-          | {node: {kind: "arr", items: [first_item[:node]] + rest}, st: st3}
+          | {node: {kind: "arr", items: [first_item[:node]] + rest}, pos: _expect_v(toks, cur, "]")}
         end
     end
 end
 
-def _parse_dict(st):
-  let st2 = _adv(st)
-  | if (_at_v(st2, "}")):
-      {node: {kind: "dict", pairs: []}, st: _adv(st2)}
+def _parse_dict(toks, pos):
+  let p2 = pos + 1
+  | if (_at_v(toks, p2, "}")):
+      {node: {kind: "dict", pairs: []}, pos: p2 + 1}
     else do
-      let first_key = _parse_dict_key(st2)
-      | let val_st = _expect_v(_adv(st2), ":")[:st]
-      | let first_val = _parse_list_expr(val_st)
-      | var cur = first_val[:st]
-      | if (_at_v(cur, ",")): cur = _adv(cur)
+      let first_key = _parse_dict_key(toks[p2])
+      | let first_val = _parse_list_expr(toks, _expect_v(toks, p2 + 1, ":"))
+      | var cur = _skip_v(toks, first_val[:pos], ",")
       | let first_pair = {key: first_key, val: first_val[:node]}
-      | if (_at_v(cur, "}")):
-          {node: {kind: "dict", pairs: [first_pair]}, st: _adv(cur)}
+      | if (_at_v(toks, cur, "}")):
+          {node: {kind: "dict", pairs: [first_pair]}, pos: cur + 1}
         else do
-          let rest = foreach (pos, range(cur[:pos], len(cur[:toks]) - 1)):
-            if (pos < cur[:pos]): continue
-            elif (_at_v(cur, "}") || _at_eof(cur)): break
+          let rest = foreach (i, range(cur, len(toks) - 1)):
+            if (i < cur): continue
+            elif (_at_v(toks, cur, "}") || _at_eof(toks, cur)): break
             else do
-              let key = _parse_dict_key(cur)
-              | cur = _expect_v(_adv(cur), ":")[:st]
-              | let vr = _parse_list_expr(cur)
-              | cur = vr[:st]
-              | if (_at_v(cur, ",")): cur = _adv(cur)
+              let key = _parse_dict_key(toks[cur])
+              | let vr = _parse_list_expr(toks, _expect_v(toks, cur + 1, ":"))
+              | cur = _skip_v(toks, vr[:pos], ",")
               | {key: key, val: vr[:node]}
             end
           end
-          | let st3 = _expect_v(cur, "}")[:st]
-          | {node: {kind: "dict", pairs: [first_pair] + rest}, st: st3}
+          | {node: {kind: "dict", pairs: [first_pair] + rest}, pos: _expect_v(toks, cur, "}")}
         end
     end
 end
 
-def _parse_dict_key(cur):
-  let ktok = _cur(cur)
-  | if (ktok[:t] == "atom"):
-      {kind: "atom", name: ktok[:v]}
-    elif (ktok[:t] == "ident" || ktok[:t] == "kw"):
-      {kind: "str", val: ktok[:v]}
-    elif (ktok[:t] == "str"):
-      {kind: "str", val: ktok[:v]}
-    else:
-      error("Expected dict key, got: " + to_string(ktok[:v]))
+def _parse_dict_key(ktok):
+  if (ktok[:t] == "atom"):
+    {kind: "atom", name: ktok[:v]}
+  elif (ktok[:t] == "ident" || ktok[:t] == "kw"):
+    {kind: "str", val: ktok[:v]}
+  elif (ktok[:t] == "str"):
+    {kind: "str", val: ktok[:v]}
+  else:
+    error("Expected dict key, got: " + to_string(ktok[:v]))
 end

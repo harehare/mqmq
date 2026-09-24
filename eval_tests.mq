@@ -39,6 +39,9 @@ end
 #   ["true && true", "", true],
 #   ["false || true", "", true],
 #   ["!false", "", true],
+#   ["[1, 2, 3, 4][1]", "", 2],
+#   ["[1, 2, 3, 4][1:3]", "", [2, 3]],
+#   ["[1, 2, 3, 4][2:]", "", [3, 4]],
 # ])
 def test_eval_literal_or_operator(query, md, expected):
   assert_eq(_run(query, md), expected)
@@ -79,6 +82,21 @@ end
 def test_eval_long_pipe_keeps_environment():
   let steps = join(map(range(1, 64), fn(i): "x += 1" end), " | ")
   | assert_eq(_run("var x = 0 | " + steps + " | x", ""), 64)
+end
+
+# Bindings made inside an operand stay visible to later operands and after
+# the expression; the value-only evaluation fast paths must keep this.
+# @parametrize([
+#   ["(let x = 1 | x) + x", 2],
+#   ["(let x = 2 | x) * 3 | x", 2],
+#   ["(var y = 1 | y) + (y += 5) | y", 6],
+#   ["false && (let z = 1) | z", 7],
+#   ["foreach (x, [1, 2, 3]): x end | x", 3],
+#   ["let x = 9 | foreach (x, []): x end | x", 9],
+# ])
+def test_eval_operand_bindings(query, expected):
+  let ast = parser::mq_parse(lexer::lex(query))
+  | assert_eq(eval::mq_eval(ast, None, {z: 7})[:val], expected)
 end
 
 def test_eval_long_pipe_stops_on_break():
