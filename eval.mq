@@ -288,6 +288,34 @@ def _eval_builtin(name, args_vals, value, env):
     end
     elif (name == "zip"):      zip(a0, a1)
 
+    # Coroutine / lazy stream builtins (no interpreted `yield`, see Known Limitations).
+    elif (name == "is_coroutine"): is_coroutine(a0)
+    elif (name == "to_coroutine"): to_coroutine(a0)
+    elif (name == "collect"):      collect(a0)
+    elif (name == "stream_range"):
+      if (len(args_vals) == 2): stream_range(a0, a1)
+      else: stream_range(a0, a1, a2)
+    elif (name == "next"):      next(a0)
+    elif (name == "close"):     close(a0)
+    elif (name == "iterables"): iterables(a0)
+    # 2-arity: `x | take(n)` (self as 1st arg) and `take(x, n)` (both explicit) both work.
+    elif (name == "send"):
+      if (len(args_vals) == 2): send(a0, a1) else: send(value, a0)
+    elif (name == "take"):
+      if (len(args_vals) == 2): take(a0, a1) else: take(value, a0)
+    elif (name == "skip"):
+      if (len(args_vals) == 2): skip(a0, a1) else: skip(value, a0)
+    elif (name == "take_while") do
+      let arr = if (len(args_vals) == 2): a0 else: value
+      | let f = if (len(args_vals) == 2): a1 else: a0
+      | take_while(arr, fn(item): _apply1(f, item, env) end)
+    end
+    elif (name == "skip_while") do
+      let arr = if (len(args_vals) == 2): a0 else: value
+      | let f = if (len(args_vals) == 2): a1 else: a0
+      | skip_while(arr, fn(item): _apply1(f, item, env) end)
+    end
+
     # Higher-order collection functions (a1 must be a fn closure)
     elif (name == "map"):
       map(a0, fn(item): _apply1(a1, item, env) end)

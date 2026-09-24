@@ -219,6 +219,7 @@ printf '# Hello\n' | mq -L mqmq 'include "mqmq" | nodes | mqmq("module math: def
 | Unless | `unless (cond): a` (runs `a` only when `cond` is false) |
 | Pipe | `expr \| expr` |
 | Function call | `len("hello")`, `to_string(42)` |
+| Coroutine / stream builtins | `to_coroutine([1,2,3]) \| collect()`, `stream_range(1, 10) \| take(3) \| collect()` |
 | Default parameters | `def f(x, y=1): x + y end` |
 | Array literal | `[1, 2, 3]` |
 | Dict literal | `{key: "val"}` |
@@ -264,8 +265,15 @@ printf '# Hello\n' | mq -L mqmq 'include "mqmq" | nodes | mqmq("module math: def
   strikethrough, horizontal rule, links, `base64`/`md5`/`sha256`/`uri`/`urid`/`html`/`text`; the `:sh`
   (shell execution) target is intentionally not implemented.
 - **Partial builtin coverage**: real `mq` has grown a large standard library (HTTP, file I/O, CSV/TOML
-  parsing, statistics, coroutines, and more); mqmq's meta-evaluator only implements the core language
-  and a modest set of builtins used by its own examples and tests.
+  parsing, statistics, and more); mqmq's meta-evaluator only implements the core language and a modest
+  set of builtins used by its own examples and tests.
+- **No `yield` keyword of its own**: real `mq` compiles a generator to a bytecode chunk its VM can
+  suspend mid-frame; any host function that lexically contains `yield:` becomes a coroutine on every
+  call, so wiring `yield:` into `mq_eval`'s generic dispatch would turn every evaluation into a
+  suspended coroutine, not just the ones hitting an interpreted `yield`. mqmq does forward the eager
+  coroutine/stream value builtins (`to_coroutine`, `stream_range`, `collect`, `take`, `skip`,
+  `take_while`, `skip_while`, `next`, `send`, `close`, `is_coroutine`, `iterables`), so a query can
+  build and drain a coroutine, it just can't author one with `yield`.
 
 ## Performance Notes
 
@@ -310,8 +318,9 @@ mq-test
 
 ## Compatibility
 
-Requires [mq](https://github.com/harehare/mq) v0.8.3 or later (needed for the host-level `until`,
-`unless`, and `catch(e)` syntax mqmq's own evaluator relies on).
+Requires [mq](https://github.com/harehare/mq) v0.9.0 or later: v0.8.3 added the host-level `until`,
+`unless`, and `catch(e)` syntax mqmq's own evaluator relies on, and v0.9.0 added the coroutine/stream
+builtins (`to_coroutine`, `stream_range`, `collect`, etc.) forwarded in the Known Limitations above.
 
 ## License
 

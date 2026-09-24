@@ -218,3 +218,35 @@ end
 def test_eval_builtin(query, md, expected):
   assert_eq(_run(query, md), expected)
 end
+
+# -- coroutine / lazy stream builtins (forwarded straight to the host) --
+
+# @parametrize([
+#   ["is_coroutine(to_coroutine([1,2]))", "", true],
+#   ["is_coroutine([1,2])", "", false],
+#   ["collect(to_coroutine([1,2,3]))", "", [1, 2, 3]],
+#   ["collect(stream_range(1, 5))", "", [1, 2, 3, 4, 5]],
+#   ["collect(stream_range(1, 5, 2))", "", [1, 3, 5]],
+#   ["collect(take(to_coroutine([1,2,3,4]), 2))", "", [1, 2]],
+#   ["collect(skip(to_coroutine([1,2,3,4]), 2))", "", [3, 4]],
+#   ["collect(take_while(to_coroutine([1,2,3,4]), fn(x): x < 3 end))", "", [1, 2]],
+#   ["collect(skip_while(to_coroutine([1,2,3,4]), fn(x): x < 3 end))", "", [3, 4]],
+#   ["next(to_coroutine([1,2]))", "", {"value": 1, "done": false}],
+#   ["iterables([1,2])", "", [1, 2]],
+#   ["iterables(42)", "", None],
+# ])
+def test_eval_coroutine_stream_builtin(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
+
+# -- same builtins called pipe-style, self filling the first arg --
+
+# @parametrize([
+#   ["stream_range(1, 10) | take(3) | collect()", "", [1, 2, 3]],
+#   ["to_coroutine([1,2,3,4]) | skip(2) | collect()", "", [3, 4]],
+#   ["to_coroutine([1,2,3,4]) | take_while(fn(x): x < 3 end) | collect()", "", [1, 2]],
+#   ["to_coroutine([1,2,3,4]) | skip_while(fn(x): x < 3 end) | collect()", "", [3, 4]],
+# ])
+def test_eval_coroutine_stream_builtin_piped(query, md, expected):
+  assert_eq(_run(query, md), expected)
+end
