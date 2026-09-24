@@ -1,0 +1,13 @@
+# Run with: mq-bench benchmarks_pipes.mq --iterations 3 --warmup 1
+# Measures evaluation of a long, left-associated pipeline.
+
+import "lexer"
+| import "parser"
+| import "eval"
+| let source = "1" + join(map(range(1, 2048), fn(i): " | ." end), "")
+| let ast = parser::mq_parse(lexer::lex(source))
+|
+
+def bench_pipe_2048():
+  eval::mq_eval(ast, None, {})[:val]
+end

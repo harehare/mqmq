@@ -76,6 +76,16 @@ def test_eval_break_continue(query, md, expected):
   assert_eq(_run(query, md), expected)
 end
 
+def test_eval_long_pipe_keeps_environment():
+  let steps = join(map(range(1, 64), fn(i): "x += 1" end), " | ")
+  | assert_eq(_run("var x = 0 | " + steps + " | x", ""), 64)
+end
+
+def test_eval_long_pipe_stops_on_break():
+  let steps = join(map(range(1, 64), fn(i): "x += 1" end), " | ")
+  | assert_eq(_run("var x = 0 | " + steps + " | break x | error(\"unreachable\")", ""), 64)
+end
+
 # -- try / catch --
 
 # @parametrize([

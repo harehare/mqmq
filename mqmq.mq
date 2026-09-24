@@ -11,6 +11,16 @@ import "lexer" |
 import "parser" |
 import "eval" |
 
+# Parse once when the same query will be applied to multiple input values.
+def mqmq_compile(query_str):
+  parser::mq_parse(lexer::lex(query_str))
+end
+
+# Evaluate a previously compiled query against a value and environment.
+def mqmq_eval_ast(ast, value, env = {}):
+  eval::mq_eval(ast, value, set(env, "__nodes__", value))[:val]
+end
+
 # # Run an mq query string against the current input nodes.
 # # self = array of all input nodes (piped in via "nodes | mqmq(...)").
 def mqmq(query_str):

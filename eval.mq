@@ -549,11 +549,25 @@ def mq_eval(ast, value, env):
     elif (k == "foreach"): _eval_foreach(ast, value, env)
 
     elif (k == "pipe") do
-      let lr = mq_eval(ast[:left], value, env)
-      | if (_ctrl(lr) != "none"):
-          lr
-        else:
-          mq_eval(ast[:right], lr[:val], lr[:env])
+      if (ast[:left][:kind] != "pipe") do
+        let lr = mq_eval(ast[:left], value, env)
+        | if (_ctrl(lr) != "none"): lr
+          else: mq_eval(ast[:right], lr[:val], lr[:env])
+      end
+      else do
+        var stages = None
+        | var cursor = ast
+        | while (cursor[:kind] == "pipe"):
+            stages = {node: cursor[:right], next: stages}
+            | cursor = cursor[:left]
+          end
+        | var result = mq_eval(cursor, value, env)
+        | while (!is_none(stages) && _ctrl(result) == "none"):
+            result = mq_eval(stages[:node], result[:val], result[:env])
+            | stages = stages[:next]
+          end
+        | result
+      end
     end
 
     elif (k == "break") do

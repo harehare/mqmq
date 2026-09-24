@@ -46,6 +46,15 @@ git clone https://github.com/harehare/mqmq.git
 mq -L mqmq 'include "mqmq" | nodes | mqmq("<mq-query>")' <markdown-files...>
 ```
 
+When applying the same query to multiple values, compile it once and reuse its
+AST. `mqmq_eval_ast` accepts the same value and environment as `mqmq_with`:
+
+```sh
+mq -I null -L mqmq \
+  'include "mqmq" | let ast = mqmq_compile("x + .") | [mqmq_eval_ast(ast, 2, {x: 1}), mqmq_eval_ast(ast, 3, {x: 2})]'
+# => [3, 5]
+```
+
 ## Examples
 
 ```sh
@@ -192,13 +201,14 @@ A few characteristics of the host `mq` runtime matter a lot for code written, li
 - **Prefer `foreach` over a manual `var acc = [] | while (...): acc += [...] end` loop when building an array.** `foreach`'s accumulator is a dedicated VM opcode that collects in place. A hand-rolled `+=` loop goes through the generic add-two-values path, which can't mutate in place once the loop variable has been read for the current iteration, and ends up copying the whole array on every append, making the loop quadratic in its length. `eval.mq`'s `_eval_foreach` (which evaluates the interpreted language's *own* `foreach`) is written this way, using real `break`/`continue` inside the host `foreach` to short-circuit and to skip collecting a `continue`d iteration.
 - **A keyword/lookup table only needs to be built once.** `lexer.mq`'s keyword set is a top-level `let` (evaluated once at module load, then captured by every `def` that follows, the same pattern `mq`'s own bundled `html.mq` module uses for `_void_tags`), checked with an O(1) dict lookup rather than a function that reconstructed and linearly scanned an array on every call.
 - **Collect lexer tokens in place.** The lexer uses `foreach` to collect tokens while an index skips characters already consumed by a token, avoiding repeated array copies from `toks += [token]`. Plain string literals are scanned once and sliced from the grapheme array, avoiding repeated string concatenation. The parser's `_at_op` reads its token once and shares a comparison operator lookup table.
+- **Walk long pipes iteratively.** The parser produces a left-associated AST for `a | b | c`. The evaluator collects the right-hand stages in a linked list, then executes them in source order. This avoids a deep call stack and repeated array copies for long pipelines.
 
 ## Running the Tests
 
 Tests are written with [`mq-test`](https://github.com/harehare/mq) (`def test_*(): assert_eq(...) end`, auto-discovered by name), matching the convention of `mq`'s own module test suites. Most cases are table-driven with `# @parametrize([[query, ..., expected], ...])` (see any `*_tests.mq` file) rather than one `def` per case, so adding a case is usually a new row, not a new function:
 
 ```sh
-mq-test lexer_tests.mq parser_tests.mq eval_tests.mq
+mq-test lexer_tests.mq parser_tests.mq eval_tests.mq mqmq_tests.mq
 ```
 
 or, to discover and run every `*_tests.mq` file in the directory:
@@ -251,6 +261,19 @@ mq-bench benchmarks_modules.mq --iterations 3 --warmup 1
 
 ```sh
 mq-bench benchmarks_collections.mq --iterations 3 --warmup 1
+```
+
+`benchmarks_reuse.mq` compares repeated parsing with explicit reuse of a
+compiled query:
+
+```sh
+mq-bench benchmarks_reuse.mq --iterations 3 --warmup 1
+```
+
+`benchmarks_pipes.mq` measures evaluation of a 2,048-stage pipeline:
+
+```sh
+mq-bench benchmarks_pipes.mq --iterations 3 --warmup 1
 ```
 
 Use `--format json --output baseline.json` to save a run, then `--baseline baseline.json` on a later run to compare timings. The runner compiles once, but executes imports and top-level setup on every iteration, so compare each benchmark against the same benchmark in a previous run. The reported times are not isolated stage timings.

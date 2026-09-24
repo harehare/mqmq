@@ -1,0 +1,19 @@
+# Run with: mq-bench benchmarks_reuse.mq --iterations 3 --warmup 1
+# Compare repeated parsing with explicit reuse of a compiled query.
+
+import "mqmq"
+| let source = join(map(range(1, 63), fn(i): to_string(i) end), " + ")
+| let ast = mqmq::mqmq_compile(source)
+|
+
+def bench_repeated_regular():
+  foreach (i, range(0, 99)):
+    mqmq::mqmq_with(source, None, {})
+  end
+end
+
+def bench_repeated_compiled():
+  foreach (i, range(0, 99)):
+    mqmq::mqmq_eval_ast(ast, None, {})
+  end
+end
