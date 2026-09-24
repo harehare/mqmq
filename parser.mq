@@ -44,6 +44,9 @@ import "lexer"
   "==": true, "!=": true, "<": true, "<=": true,
   ">": true, ">=": true, "=~": true, "!~": true,
 }
+| let _ADD_OPS = {"+": true, "-": true, "<<": true, ">>": true}
+| let _MUL_OPS = {"*": true, "/": true, "%": true, "@": true}
+| let _RANGE_OPS = {"??": true, "..": true}
 |
 
 # ── state helpers ─────────────────────────────────────────────────────────────
@@ -61,6 +64,11 @@ def _at_eof(st):     _cur(st)[:t] == "eof"  end
 def _at_op(st, v):
   let tok = _cur(st)
   | tok[:t] == "op" && tok[:v] == v
+end
+
+def _at_any_op(st, ops):
+  let tok = _cur(st)
+  | tok[:t] == "op" && !is_none(ops[tok[:v]])
 end
 
 def _peekn(st, n):
@@ -562,7 +570,7 @@ def _parse_cmp(st):
   let lr  = _parse_add(st)
   | var node = lr[:node]
   | var cur  = lr[:st]
-  | while (_cur(cur)[:t] == "op" && !is_none(_CMP_OPS[_cur(cur)[:v]])):
+  | while (_at_any_op(cur, _CMP_OPS)):
       let op = _cur(cur)[:v]
       | let rr = _parse_add(_adv(cur))
       | node = {kind: "bin", op: op, left: node, right: rr[:node]}
@@ -575,7 +583,7 @@ def _parse_add(st):
   let lr = _parse_mul(st)
   | var node = lr[:node]
   | var cur  = lr[:st]
-  | while (_at_op(cur, "+") || _at_op(cur, "-") || _at_op(cur, "<<") || _at_op(cur, ">>")):
+  | while (_at_any_op(cur, _ADD_OPS)):
       let op = _cur(cur)[:v]
       | let rr = _parse_mul(_adv(cur))
       | node = {kind: "bin", op: op, left: node, right: rr[:node]}
@@ -588,7 +596,7 @@ def _parse_mul(st):
   let lr = _parse_coalesce_range(st)
   | var node = lr[:node]
   | var cur  = lr[:st]
-  | while (_at_op(cur, "*") || _at_op(cur, "/") || _at_op(cur, "%") || _at_op(cur, "@")):
+  | while (_at_any_op(cur, _MUL_OPS)):
       let op = _cur(cur)[:v]
       | let rr = _parse_coalesce_range(_adv(cur))
       | node = {kind: "bin", op: op, left: node, right: rr[:node]}
@@ -603,7 +611,7 @@ def _parse_coalesce_range(st):
   let lr = _parse_unary(st)
   | var node = lr[:node]
   | var cur  = lr[:st]
-  | while (_at_op(cur, "??") || _at_op(cur, "..")):
+  | while (_at_any_op(cur, _RANGE_OPS)):
       let op = _cur(cur)[:v]
       | let rr = _parse_unary(_adv(cur))
       | node = {kind: "bin", op: op, left: node, right: rr[:node]}
@@ -679,18 +687,35 @@ def _parse_postfix(st):
   | {node: node, st: cur}
 end
 
+# Collect list elements through the host foreach accumulator. Advancing cur
+# past an expression lets later positions skip tokens consumed by that item.
+# This avoids copying the growing result array for every element. The empty
+# and one-item cases return before creating a range, which matters for many
+# small lists embedded in one large query.
 def _parse_call_args(st):
-  var args = []
-  | var cur = st
-  | while (!_at_v(cur, ")") && !_at_eof(cur)):
-      let ar = _parse_list_expr(cur)
-      | args += [ar[:node]]
-      | cur  = ar[:st]
-      | if (_at_v(cur, ",")):
-          cur = _adv(cur)
-    end
-  | let st2 = _expect_v(cur, ")")[:st]
-  | {args: args, st: st2}
+  if (_at_v(st, ")")):
+    {args: [], st: _adv(st)}
+  else do
+    let first_arg = _parse_list_expr(st)
+    | var cur = first_arg[:st]
+    | if (_at_v(cur, ",")): cur = _adv(cur)
+    | if (_at_v(cur, ")")):
+        {args: [first_arg[:node]], st: _adv(cur)}
+      else do
+        let rest = foreach (pos, range(cur[:pos], len(cur[:toks]) - 1)):
+          if (pos < cur[:pos]): continue
+          elif (_at_v(cur, ")") || _at_eof(cur)): break
+          else do
+            let ar = _parse_list_expr(cur)
+            | cur = ar[:st]
+            | if (_at_v(cur, ",")): cur = _adv(cur)
+            | ar[:node]
+          end
+        end
+        | let st2 = _expect_v(cur, ")")[:st]
+        | {args: [first_arg[:node]] + rest, st: st2}
+      end
+  end
 end
 
 # ── primary ────────────────────────────────────────────────────────────────────
@@ -758,34 +783,61 @@ end
 
 def _parse_array(st):
   let st2 = _adv(st)
-  | var items = []
-  | var cur = st2
-  | while (!_at_v(cur, "]") && !_at_eof(cur)):
-      let ir = _parse_list_expr(cur)
-      | items += [ir[:node]]
-      | cur = ir[:st]
-      | if (_at_v(cur, ",")):
-          cur = _adv(cur)
+  | if (_at_v(st2, "]")):
+      {node: {kind: "arr", items: []}, st: _adv(st2)}
+    else do
+      let first_item = _parse_list_expr(st2)
+      | var cur = first_item[:st]
+      | if (_at_v(cur, ",")): cur = _adv(cur)
+      | if (_at_v(cur, "]")):
+          {node: {kind: "arr", items: [first_item[:node]]}, st: _adv(cur)}
+        else do
+          let rest = foreach (pos, range(cur[:pos], len(cur[:toks]) - 1)):
+            if (pos < cur[:pos]): continue
+            elif (_at_v(cur, "]") || _at_eof(cur)): break
+            else do
+              let ir = _parse_list_expr(cur)
+              | cur = ir[:st]
+              | if (_at_v(cur, ",")): cur = _adv(cur)
+              | ir[:node]
+            end
+          end
+          | let st3 = _expect_v(cur, "]")[:st]
+          | {node: {kind: "arr", items: [first_item[:node]] + rest}, st: st3}
+        end
     end
-  | let st3 = _expect_v(cur, "]")[:st]
-  | {node: {kind: "arr", items: items}, st: st3}
 end
 
 def _parse_dict(st):
   let st2 = _adv(st)
-  | var pairs = []
-  | var cur = st2
-  | while (!_at_v(cur, "}") && !_at_eof(cur)):
-      let key = _parse_dict_key(cur)
-      | cur = _expect_v(_adv(cur), ":")[:st]
-      | let vr = _parse_list_expr(cur)
-      | pairs += [{key: key, val: vr[:node]}]
-      | cur = vr[:st]
-      | if (_at_v(cur, ",")):
-          cur = _adv(cur)
+  | if (_at_v(st2, "}")):
+      {node: {kind: "dict", pairs: []}, st: _adv(st2)}
+    else do
+      let first_key = _parse_dict_key(st2)
+      | let val_st = _expect_v(_adv(st2), ":")[:st]
+      | let first_val = _parse_list_expr(val_st)
+      | var cur = first_val[:st]
+      | if (_at_v(cur, ",")): cur = _adv(cur)
+      | let first_pair = {key: first_key, val: first_val[:node]}
+      | if (_at_v(cur, "}")):
+          {node: {kind: "dict", pairs: [first_pair]}, st: _adv(cur)}
+        else do
+          let rest = foreach (pos, range(cur[:pos], len(cur[:toks]) - 1)):
+            if (pos < cur[:pos]): continue
+            elif (_at_v(cur, "}") || _at_eof(cur)): break
+            else do
+              let key = _parse_dict_key(cur)
+              | cur = _expect_v(_adv(cur), ":")[:st]
+              | let vr = _parse_list_expr(cur)
+              | cur = vr[:st]
+              | if (_at_v(cur, ",")): cur = _adv(cur)
+              | {key: key, val: vr[:node]}
+            end
+          end
+          | let st3 = _expect_v(cur, "}")[:st]
+          | {node: {kind: "dict", pairs: [first_pair] + rest}, st: st3}
+        end
     end
-  | let st3 = _expect_v(cur, "}")[:st]
-  | {node: {kind: "dict", pairs: pairs}, st: st3}
 end
 
 def _parse_dict_key(cur):

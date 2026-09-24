@@ -49,7 +49,7 @@ def _is_alnum(c):
 end
 
 def _is_ws(c):
-  c == " " || c == "\t" || c == "\n" || c == "\r"
+  c == " " || c == "\t" || c == "\n" || c == "\r" || c == "\r\n"
 end
 
 def _tok(t, v):
@@ -70,6 +70,23 @@ end
 def _scan_while(chars, start, n, pred_fn):
   var j = start
   | while (j < n && pred_fn(chars[j])):
+      j += 1
+    end
+  | j
+end
+
+# Skip a whole whitespace run without creating a result for each character.
+def _scan_ws(chars, start, n):
+  var j = start
+  | while (j < n && _is_ws(chars[j])):
+      j += 1
+    end
+  | j
+end
+
+def _scan_comment(chars, start, n):
+  var j = start
+  | while (j < n && chars[j] != "\n" && chars[j] != "\r" && chars[j] != "\r\n"):
       j += 1
     end
   | j
@@ -98,7 +115,7 @@ def _scan_until_brace(chars, start, n):
   | while (k < n && depth > 0):
       let c = chars[k]
       | if (in_comment) do
-          if (c == "\n"): in_comment = false
+          if (c == "\n" || c == "\r" || c == "\r\n"): in_comment = false
           | k += 1
         end
         elif (!is_empty(quote)) do
@@ -167,9 +184,9 @@ end
 def _lex_one(chars, i, n):
   let c = chars[i]
   | if (_is_ws(c)):
-      {tok: None, next: i + 1}
+      {tok: None, next: _scan_ws(chars, i + 1, n)}
     elif (c == "#"):
-      {tok: None, next: _scan_while(chars, i + 1, n, fn(ch): ch != "\n" end)}
+      {tok: None, next: _scan_comment(chars, i + 1, n)}
     elif (c == ".") do
       if (i + 1 < n && _is_alpha(chars[i + 1])) do
         let j = _scan_while(chars, i + 1, n, _is_alnum)

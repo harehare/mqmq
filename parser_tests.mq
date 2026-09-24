@@ -157,3 +157,13 @@ def test_parse_dict_simple_and_compound_values():
   | assert_eq(pairs[0][:val], {kind: "num", val: 1})
   | assert_eq(pairs[1][:val][:kind], "bin")
 end
+
+def test_parse_nested_lists():
+  let items = _parse("[[1, 2], f(3, [4, 5]), {a: [6, 7], b: 8}]")[:items]
+  | assert_eq(len(items), 3)
+  | assert_eq(len(items[0][:items]), 2)
+  | assert_eq(len(items[1][:args]), 2)
+  | assert_eq(len(items[1][:args][1][:items]), 2)
+  | assert_eq(len(items[2][:pairs]), 2)
+  | assert_eq(len(items[2][:pairs][0][:val][:items]), 2)
+end

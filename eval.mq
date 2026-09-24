@@ -105,22 +105,17 @@ end
 ## Walk match arms in order, returning the {val, env} of the first arm whose
 ## pattern matches `matchval` and (if present) whose guard is truthy.
 def _try_match_arms(arms, matchval, value, env):
-  if (is_empty(arms)) do
-      error("No match arm matched")
-    end
-  else do
-      let arm = first(arms)
+  var i = 0
+  | var result = None
+  | let n = len(arms)
+  | while (i < n && is_none(result)):
+      let arm = arms[i]
       | let mr = _match_pattern(arm[:pattern], matchval, env)
-      | if (!mr[:matched]) do
-          _try_match_arms(arms[1:], matchval, value, env)
-        end
-        elif (!is_none(arm[:guard]) && !mq_eval(arm[:guard], value, mr[:env])[:val]) do
-          _try_match_arms(arms[1:], matchval, value, env)
-        end
-        else do
-          mq_eval(arm[:body], value, mr[:env])
-        end
+      | if (mr[:matched] && (is_none(arm[:guard]) || mq_eval(arm[:guard], value, mr[:env])[:val])):
+          result = mq_eval(arm[:body], value, mr[:env])
+      | i += 1
     end
+  | if (is_none(result)): error("No match arm matched") else: result
 end
 
 # ── apply a closure (fn node) to arguments ───────────────────────────────────
@@ -181,27 +176,24 @@ end
 
 ## Filter a value (array of nodes or a single node) by a named selector.
 def _eval_sel(name, value):
-  let pred = fn(node):
-    if (name == "h1"):      is_h1(node)
-      elif (name == "h2"):  is_h2(node)
-      elif (name == "h3"):  is_h3(node)
-      elif (name == "h4"):  is_h4(node)
-      elif (name == "h5"):  is_h5(node)
-      elif (name == "h6"):  is_h6(node)
-      elif (name == "h"):   is_h(node)
-      elif (name == "code"):        is_code(node)
-      elif (name == "list"):        is_list(node)
-      elif (name == "list_item"):   is_list(node)
-      elif (name == "table_cell"):  is_table_cell(node)
-      elif (name == "table_align"): is_table_align(node)
-      elif (name == "table"):       is_table_cell(node) || is_table_align(node)
-      elif (name == "blockquote"):  to_md_name(node) == "blockquote"
-      elif (name == "thematic_break"): to_md_name(node) == "Horizontal_rule"
-      elif (name == "html"):        is_html(node)
-      elif (name == "definition"):  to_md_name(node) == "definition"
-      elif (name == "text"):        !is_h(node) && !is_code(node) && !is_list(node) && !is_html(node)
-      else: error("Unknown selector: ." + name)
-  end
+  let pred = if (name == "h1"): fn(node): is_h1(node) end
+    elif (name == "h2"): fn(node): is_h2(node) end
+    elif (name == "h3"): fn(node): is_h3(node) end
+    elif (name == "h4"): fn(node): is_h4(node) end
+    elif (name == "h5"): fn(node): is_h5(node) end
+    elif (name == "h6"): fn(node): is_h6(node) end
+    elif (name == "h"): fn(node): is_h(node) end
+    elif (name == "code"): fn(node): is_code(node) end
+    elif (name == "list" || name == "list_item"): fn(node): is_list(node) end
+    elif (name == "table_cell"): fn(node): is_table_cell(node) end
+    elif (name == "table_align"): fn(node): is_table_align(node) end
+    elif (name == "table"): fn(node): is_table_cell(node) || is_table_align(node) end
+    elif (name == "blockquote"): fn(node): to_md_name(node) == "blockquote" end
+    elif (name == "thematic_break"): fn(node): to_md_name(node) == "Horizontal_rule" end
+    elif (name == "html"): fn(node): is_html(node) end
+    elif (name == "definition"): fn(node): to_md_name(node) == "definition" end
+    elif (name == "text"): fn(node): !is_h(node) && !is_code(node) && !is_list(node) && !is_html(node) end
+    else: error("Unknown selector: ." + name)
   | if (is_array(value)):
       filter(value, pred)
     elif (pred(value)):
@@ -515,7 +507,9 @@ def mq_eval(ast, value, env):
           {val: v, env: env}
     end
     elif (k == "call") do
-      let args_vals = map(ast[:args], fn(a): mq_eval(a, value, env)[:val] end)
+      let args = ast[:args]
+      | let args_vals = if (len(args) == 1): [mq_eval(args[0], value, env)[:val]]
+                        else: map(args, fn(a): mq_eval(a, value, env)[:val] end)
       | let named = env[ast[:name]]
       | let result = if (is_dict(named) && named[:kind] == "fn"):
                        _call_user_fn(named, args_vals, value, env)
@@ -606,9 +600,8 @@ def mq_eval(ast, value, env):
 
     elif (k == "module") do
       let inner = mq_eval(ast[:body], value, env)
-      | let before_keys = keys(env)
       | let after_keys = keys(inner[:env])
-      | let new_keys = filter(after_keys, fn(nk): !contains(before_keys, nk) end)
+      | let new_keys = filter(after_keys, fn(nk): !has(env, nk) end)
       | var new_env = env
       | var i = 0
       | while (i < len(new_keys)):
@@ -734,19 +727,18 @@ def _eval_unless(ast, value, env):
 end
 
 def _eval_elifs(elifs, else_node, value, env):
-  if (is_empty(elifs)) do
-    if (!is_none(else_node)):
-      mq_eval(else_node, value, env)
-    else:
-      {val: None, env: env}
-  end else do
-    let e = first(elifs)
-    | let cv = mq_eval(e[:cond], value, env)[:val]
-    | if (cv):
-        mq_eval(e[:body], value, env)
-      else:
-        _eval_elifs(elifs[1:], else_node, value, env)
-  end
+  var i = 0
+  | var result = None
+  | let n = len(elifs)
+  | while (i < n && is_none(result)):
+      let e = elifs[i]
+      | if (mq_eval(e[:cond], value, env)[:val]):
+          result = mq_eval(e[:body], value, env)
+      | i += 1
+    end
+  | if (!is_none(result)): result
+    elif (!is_none(else_node)): mq_eval(else_node, value, env)
+    else: {val: None, env: env}
 end
 
 # ── while loop ────────────────────────────────────────────────────────────────
@@ -810,20 +802,24 @@ end
 ## per-item skip), so it also short-circuits the interpreted loop for free.
 def _eval_foreach(ast, value, env):
   let iter_val = mq_eval(ast[:iter], value, env)[:val]
+  | let iter_var = ast[:iter_var]
+  | let body = ast[:body]
   | var cur_env = env
   | var broke = false
   | var brk_val = None
   | let results = foreach (item, iter_val):
-      let loop_env = _env_set(cur_env, ast[:iter_var], item)
-      | let br = mq_eval(ast[:body], item, loop_env)
-      | let c = _ctrl(br)
+      let loop_env = set(cur_env, iter_var, item)
+      | let br = mq_eval(body, item, loop_env)
+      | let signal = br[:ctrl]
       | cur_env = br[:env]
-      | if (c == "break") do
+      | if (is_none(signal) || signal == "none"):
+          br[:val]
+        elif (signal == "break") do
           brk_val = br[:val]
           | broke = true
           | break
         end
-        elif (c == "continue"):
+        elif (signal == "continue"):
           continue
         else:
           br[:val]

@@ -1,0 +1,16 @@
+# Run with: mq-bench benchmarks_modules.mq --iterations 3 --warmup 1
+# Measures namespace creation with many pre-existing bindings.
+
+import "eval"
+| var env = {}
+| let _setup = foreach (i, range(1, 1024)):
+    env = set(env, "k" + to_string(i), i)
+  end
+| let module_ast = {kind: "module", name: "m",
+    body: {kind: "def", name: "f", params: [], body: {kind: "num", val: 1}}}
+| None
+|
+
+def bench_module_large_env():
+  eval::mq_eval(module_ast, None, env)[:env]
+end

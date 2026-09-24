@@ -335,11 +335,45 @@ mq-bench benchmarks.mq --filter fibonacci_20 --iterations 1 --warmup 0
 The interpreted `fib(20)` case is slow; use `--filter arithmetic` or
 `--filter long_string` for quicker pipeline runs with more iterations.
 `benchmarks_lists.mq` measures parsing of larger arrays, call arguments, and
-dictionaries. Run it separately so its token generation does not add setup
+dictionaries, including 2,048-element cases. Run it separately so its token generation does not add setup
 time to the Fibonacci results:
 
 ```sh
 mq-bench benchmarks_lists.mq --iterations 3 --warmup 1
+```
+
+`benchmarks_selectors.mq` measures selector filtering over 1,024 headings:
+
+```sh
+mq-bench benchmarks_selectors.mq --iterations 3 --warmup 1
+```
+
+`benchmarks_scanning.mq` covers a long arithmetic expression and a long
+whitespace run without changing the setup cost of `benchmarks.mq`:
+
+```sh
+mq-bench benchmarks_scanning.mq --iterations 3 --warmup 1
+```
+
+`benchmarks_branches.mq` measures evaluation of 512-way `elif` and `match`
+expressions:
+
+```sh
+mq-bench benchmarks_branches.mq --iterations 3 --warmup 1
+```
+
+`benchmarks_modules.mq` measures namespace creation when the environment
+already contains 1,024 bindings:
+
+```sh
+mq-bench benchmarks_modules.mq --iterations 3 --warmup 1
+```
+
+`benchmarks_collections.mq` measures an interpreted `foreach` over 8,192
+items:
+
+```sh
+mq-bench benchmarks_collections.mq --iterations 3 --warmup 1
 ```
 
 Use `--format json --output baseline.json` to save a run, then

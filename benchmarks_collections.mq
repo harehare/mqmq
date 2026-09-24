@@ -1,0 +1,12 @@
+# Run with: mq-bench benchmarks_collections.mq --iterations 3 --warmup 1
+# Measures interpreted foreach over a prebuilt collection.
+
+import "eval"
+| let items = range(0, 8191)
+| let foreach_ast = {kind: "foreach", iter_var: "item",
+    iter: {kind: "dot"}, body: {kind: "ident", name: "item"}}
+|
+
+def bench_foreach_8192():
+  eval::mq_eval(foreach_ast, items, {})[:val]
+end

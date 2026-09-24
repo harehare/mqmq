@@ -12,6 +12,15 @@ def _run(q, md):
   | eval::mq_eval(ast, md, {__nodes__: md})[:val]
 end
 
+def test_eval_selector_array_and_scalar():
+  let heading = to_h("title", 6)
+  | let other = to_h("other", 1)
+  | let ast = {kind: "sel", name: "h6"}
+  | assert_eq(eval::mq_eval(ast, [heading, other], {})[:val], [heading])
+  | assert_eq(eval::mq_eval(ast, heading, {})[:val], [heading])
+  | assert_eq(eval::mq_eval(ast, other, {})[:val], [])
+end
+
 # -- literals / arithmetic / comparison / boolean --
 
 # @parametrize([
@@ -201,6 +210,25 @@ def test_eval_match(query, md, expected):
   assert_eq(_run(query, md), expected)
 end
 
+def test_eval_many_elifs():
+  let false_arms = map(range(1, 127), fn(i):
+    {cond: {kind: "bool", val: false}, body: {kind: "num", val: i}}
+  end)
+  | let arms = false_arms + [{cond: {kind: "bool", val: true}, body: {kind: "num", val: 128}}]
+  | let ast = {kind: "if", cond: {kind: "bool", val: false}, then: {kind: "num", val: 0},
+               elifs: arms, else_br: {kind: "num", val: 999}}
+  | assert_eq(eval::mq_eval(ast, None, {})[:val], 128)
+end
+
+def test_eval_many_match_arms():
+  let arms = map(range(1, 128), fn(i):
+    {pattern: {kind: "litpat", val: {kind: "num", val: i}},
+     guard: None, body: {kind: "num", val: i}}
+  end)
+  | let ast = {kind: "match", val: {kind: "num", val: 128}, arms: arms}
+  | assert_eq(eval::mq_eval(ast, None, {})[:val], 128)
+end
+
 # -- def with ; terminator / inline module + :: --
 
 # @parametrize([
@@ -223,6 +251,19 @@ def test_module_bare_name_not_leaked():
   let ok = try: _run("module math: def add(a, b): a + b; end | add(1, 2)", "") == "unreachable"
            catch: true
   | assert_eq(ok, true)
+end
+
+def test_module_names_with_none_bindings():
+  let env = {existing: None, count: 1}
+  | let body = {kind: "pipe",
+      left: {kind: "let", name: "new_none", val: {kind: "none"}},
+      right: {kind: "def", name: "f", params: [], body: {kind: "num", val: 1}}}
+  | let ast = {kind: "module", name: "m", body: body}
+  | let result = eval::mq_eval(ast, None, env)[:env]
+  | assert_eq(contains(keys(result), "m::existing"), false)
+  | assert_eq(contains(keys(result), "m::count"), false)
+  | assert_eq(contains(keys(result), "m::new_none"), true)
+  | assert_eq(contains(keys(result), "m::f"), true)
 end
 
 # -- previously-broken builtins, now fixed --

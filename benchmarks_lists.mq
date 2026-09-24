@@ -6,15 +6,25 @@ import "lexer" | import "parser"
 | let nums_64 = join(map(range(0, 63), fn(i): to_string(i) end), ",")
 | let nums_256 = join(map(range(0, 255), fn(i): to_string(i) end), ",")
 | let nums_512 = join(map(range(0, 511), fn(i): to_string(i) end), ",")
+| let nums_2048 = join(map(range(0, 2047), fn(i): to_string(i) end), ",")
 | let array_64 = lexer::lex("[" + nums_64 + "]")
 | let array_256 = lexer::lex("[" + nums_256 + "]")
 | let array_512 = lexer::lex("[" + nums_512 + "]")
+| let array_2048 = lexer::lex("[" + nums_2048 + "]")
 | let args_256 = lexer::lex("f(" + nums_256 + ")")
+| let args_2048 = lexer::lex("f(" + nums_2048 + ")")
+| let nested_512 = lexer::lex("[" + join(map(range(0, 511), fn(i): "[" + to_string(i) + "]" end), ",") + "]")
 | let dict_source = "{" + join(map(range(0, 255), fn(i): "k" + to_string(i) + ":" + to_string(i) end), ",") + "}"
 | let dict_256 = lexer::lex(dict_source)
+| let dict_source_2048 = "{" + join(map(range(0, 2047), fn(i): "k" + to_string(i) + ":" + to_string(i) end), ",") + "}"
+| let dict_2048 = lexer::lex(dict_source_2048)
 |
 def bench_array_64(): parser::mq_parse(array_64) end
 def bench_array_256(): parser::mq_parse(array_256) end
 def bench_array_512(): parser::mq_parse(array_512) end
+def bench_array_2048(): parser::mq_parse(array_2048) end
 def bench_args_256(): parser::mq_parse(args_256) end
+def bench_args_2048(): parser::mq_parse(args_2048) end
+def bench_nested_array_512(): parser::mq_parse(nested_512) end
 def bench_dict_256(): parser::mq_parse(dict_256) end
+def bench_dict_2048(): parser::mq_parse(dict_2048) end

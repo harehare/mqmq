@@ -1,0 +1,25 @@
+# Run with: mq-bench benchmarks_branches.mq --iterations 3 --warmup 1
+# The 512-way cases expose the cost of walking long elif and match lists.
+
+import "eval"
+| let elifs = map(range(1, 512), fn(i):
+    {cond: {kind: "bool", val: false}, body: {kind: "num", val: i}}
+  end)
+| let match_arms = map(range(1, 512), fn(i):
+    {pattern: {kind: "litpat", val: {kind: "num", val: i}},
+     guard: None, body: {kind: "num", val: i}}
+  end)
+| let if_ast = {kind: "if", cond: {kind: "bool", val: false},
+                then: {kind: "num", val: 0}, elifs: elifs,
+                else_br: {kind: "num", val: 999}}
+| let match_ast = {kind: "match", val: {kind: "num", val: 512},
+                   arms: match_arms}
+|
+
+def bench_many_elifs():
+  eval::mq_eval(if_ast, None, {})[:val]
+end
+
+def bench_many_match_arms():
+  eval::mq_eval(match_ast, None, {})[:val]
+end

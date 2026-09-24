@@ -56,6 +56,12 @@ def test_empty_query():
   assert_eq(_lex(""), [])
 end
 
+def test_long_whitespace_and_comment():
+  let spaces = join(map(range(0, 255), fn(i): " \t\r\n" end), "")
+  | assert_eq(_lex(spaces + "42" + spaces), [_tok("num", "42")])
+  | assert_eq(_lex("#" + spaces + "\n42"), [_tok("num", "42")])
+end
+
 def test_all_multi_character_operators():
   let source = "+= -= *= /= %= //= |= -> && || == =~ != !~ <= << >= >> ?? :: .."
   | assert_eq(map(_lex(source), fn(tok): tok[:v] end), split(source, " "))
@@ -102,6 +108,15 @@ def test_interp_brace_in_comment():
   | assert_eq(toks[0][:v], [
       {kind: "text", val: "x"},
       {kind: "expr", val: "1 # }\n + 2"},
+      {kind: "text", val: "y"},
+    ])
+end
+
+def test_interp_brace_in_crlf_comment():
+  let toks = _lex("s\"x${1 # }\r\n + 2}y\"")
+  | assert_eq(toks[0][:v], [
+      {kind: "text", val: "x"},
+      {kind: "expr", val: "1 # }\r\n + 2"},
       {kind: "text", val: "y"},
     ])
 end
