@@ -92,12 +92,26 @@ def test_eval_coalesce_regex_shift(query, md, expected):
   assert_eq(_run(query, md), expected)
 end
 
+# The right side is evaluated only when its result is needed.
+# @parametrize([
+#   ["false && error(\"unreachable\")", false],
+#   ["true || error(\"unreachable\")", true],
+#   ["1 ?? error(\"unreachable\")", 1],
+#   ["true && 7", 7],
+#   ["false || 7", 7],
+#   ["\"x\" || error(\"unreachable\")", "x"],
+# ])
+def test_eval_lazy_binary(query, expected):
+  assert_eq(_run(query, ""), expected)
+end
+
 # -- string interpolation --
 
 # @parametrize([
 #   ["let x = 5 | s\"val=${x}\"", "", "val=5"],
 #   ["s\"sum=${1+2}\"", "", "sum=3"],
 #   ["s\"plain text\"", "", "plain text"],
+#   ["s\"x${\"}\"}y\"", "", "x}y"],
 # ])
 def test_eval_string_interp(query, md, expected):
   assert_eq(_run(query, md), expected)
@@ -195,6 +209,14 @@ end
 # ])
 def test_eval_def_and_module(query, md, expected):
   assert_eq(_run(query, md), expected)
+end
+
+def test_recursive_function():
+  assert_eq(_run("def fib(n): if (n < 2): n else: fib(n - 1) + fib(n - 2) end | fib(10)", ""), 55)
+end
+
+def test_user_function_shadows_builtin():
+  assert_eq(_run("def len(x): 99 end | len(\"a\")", ""), 99)
 end
 
 def test_module_bare_name_not_leaked():

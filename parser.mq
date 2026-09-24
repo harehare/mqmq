@@ -40,6 +40,11 @@
 #   interp {kind:"interp", segs}              - s"...${expr}..." segments
 
 import "lexer"
+| let _CMP_OPS = {
+  "==": true, "!=": true, "<": true, "<=": true,
+  ">": true, ">=": true, "=~": true, "!~": true,
+}
+|
 
 # ── state helpers ─────────────────────────────────────────────────────────────
 
@@ -53,7 +58,10 @@ def _at_eof(st):     _cur(st)[:t] == "eof"  end
 ## Like _at_v, but also requires the token to be an "op" token -- otherwise a
 ## string literal whose contents happen to equal an operator symbol (e.g.
 ## `"-"`, `"+"`) would be misread as that operator.
-def _at_op(st, v):   _cur(st)[:t] == "op" && _cur(st)[:v] == v end
+def _at_op(st, v):
+  let tok = _cur(st)
+  | tok[:t] == "op" && tok[:v] == v
+end
 
 def _peekn(st, n):
   let p = st[:pos] + n
@@ -504,6 +512,19 @@ end
 
 def _parse_expr(st):  _parse_or(st) end
 
+# List items that are a single value need no operator-precedence walk. Keep
+# the normal parser for anything followed by an operator or postfix access.
+def _parse_list_expr(st):
+  let tok = _cur(st)
+  | let next = _peekn(st, 1)
+  | let simple = tok[:t] == "num" || tok[:t] == "str" || tok[:t] == "bool" ||
+                 tok[:t] == "none" || tok[:t] == "atom" || tok[:t] == "ident" ||
+                 tok[:t] == "sel" || tok[:t] == "dot" || tok[:t] == "istr"
+  | let closes = next[:t] == "op" && (next[:v] == "," || next[:v] == ")" ||
+                                       next[:v] == "]" || next[:v] == "}")
+  | if (simple && closes): _parse_primary(st) else: _parse_expr(st)
+end
+
 def _parse_or(st):
   let lr = _parse_and(st)
   | var node = lr[:node]
@@ -541,8 +562,7 @@ def _parse_cmp(st):
   let lr  = _parse_add(st)
   | var node = lr[:node]
   | var cur  = lr[:st]
-  | let ops = ["==", "!=", "<", "<=", ">", ">=", "=~", "!~"]
-  | while (contains(ops, _cur(cur)[:v])):
+  | while (_cur(cur)[:t] == "op" && !is_none(_CMP_OPS[_cur(cur)[:v]])):
       let op = _cur(cur)[:v]
       | let rr = _parse_add(_adv(cur))
       | node = {kind: "bin", op: op, left: node, right: rr[:node]}
@@ -663,7 +683,7 @@ def _parse_call_args(st):
   var args = []
   | var cur = st
   | while (!_at_v(cur, ")") && !_at_eof(cur)):
-      let ar = _parse_expr(cur)
+      let ar = _parse_list_expr(cur)
       | args += [ar[:node]]
       | cur  = ar[:st]
       | if (_at_v(cur, ",")):
@@ -741,7 +761,7 @@ def _parse_array(st):
   | var items = []
   | var cur = st2
   | while (!_at_v(cur, "]") && !_at_eof(cur)):
-      let ir = _parse_expr(cur)
+      let ir = _parse_list_expr(cur)
       | items += [ir[:node]]
       | cur = ir[:st]
       | if (_at_v(cur, ",")):
@@ -758,7 +778,7 @@ def _parse_dict(st):
   | while (!_at_v(cur, "}") && !_at_eof(cur)):
       let key = _parse_dict_key(cur)
       | cur = _expect_v(_adv(cur), ":")[:st]
-      | let vr = _parse_expr(cur)
+      | let vr = _parse_list_expr(cur)
       | pairs += [{key: key, val: vr[:node]}]
       | cur = vr[:st]
       | if (_at_v(cur, ",")):

@@ -298,6 +298,11 @@ in `mq` itself:
   (evaluated once at module load, then captured by every `def` that follows, the same pattern `mq`'s
   own bundled `html.mq` module uses for `_void_tags`) checked with an O(1) dict lookup, rather than a
   function that reconstructed and linearly scanned an array on every call.
+- **Collect lexer tokens in place.** The lexer uses `foreach` to collect tokens while an index skips
+  characters already consumed by a token. This avoids repeated array copies from `toks += [token]`.
+  Plain string literals are scanned once and sliced from the grapheme array, avoiding repeated
+  string concatenation. The parser's `_at_op` reads its token once and shares a comparison
+  operator lookup table.
 
 ## Running the Tests
 
@@ -315,6 +320,33 @@ or, to discover and run every `*_tests.mq` file in the directory:
 ```sh
 mq-test
 ```
+
+## Benchmarks
+
+`benchmarks.mq` exercises lexing, parsing, evaluation, and the full pipeline
+on the same 64-number arithmetic query, plus long strings, short-circuit, and recursive
+Fibonacci cases. The Fibonacci cases call `fib(20)` in native `mq` and `mqmq`.
+Run them with `mq-bench` from the [mq repository](https://github.com/harehare/mq):
+
+```sh
+mq-bench benchmarks.mq --filter fibonacci_20 --iterations 1 --warmup 0
+```
+
+The interpreted `fib(20)` case is slow; use `--filter arithmetic` or
+`--filter long_string` for quicker pipeline runs with more iterations.
+`benchmarks_lists.mq` measures parsing of larger arrays, call arguments, and
+dictionaries. Run it separately so its token generation does not add setup
+time to the Fibonacci results:
+
+```sh
+mq-bench benchmarks_lists.mq --iterations 3 --warmup 1
+```
+
+Use `--format json --output baseline.json` to save a run, then
+`--baseline baseline.json` on a later run to compare timings. The runner
+compiles once, but executes imports and top-level setup on every iteration.
+For that reason, compare each benchmark against the same benchmark in a
+previous run; the reported times are not isolated stage timings.
 
 ## Compatibility
 

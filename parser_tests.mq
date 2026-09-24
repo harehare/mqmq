@@ -134,3 +134,26 @@ def test_parse_def_semicolon_terminator():
   | assert_eq(ast[:kind], "def")
   | assert_eq(ast[:body], {kind: "ident", name: "x"})
 end
+
+def test_parse_array_simple_and_compound_items():
+  let items = _parse("[\"+\", x, 1 + 2, f(3), x[0]]")[:items]
+  | assert_eq(items[0], {kind: "str", val: "+"})
+  | assert_eq(items[1], {kind: "ident", name: "x"})
+  | assert_eq(items[2][:kind], "bin")
+  | assert_eq(items[3][:kind], "call")
+  | assert_eq(items[4][:kind], "idx")
+end
+
+def test_parse_call_simple_and_compound_args():
+  let args = _parse("f(1, x, x + 2, g(3))")[:args]
+  | assert_eq(args[0], {kind: "num", val: 1})
+  | assert_eq(args[1], {kind: "ident", name: "x"})
+  | assert_eq(args[2][:kind], "bin")
+  | assert_eq(args[3][:kind], "call")
+end
+
+def test_parse_dict_simple_and_compound_values():
+  let pairs = _parse("{a: 1, b: x + 2}")[:pairs]
+  | assert_eq(pairs[0][:val], {kind: "num", val: 1})
+  | assert_eq(pairs[1][:val][:kind], "bin")
+end

@@ -1,0 +1,68 @@
+# Run with: mq-bench benchmarks.mq --filter fibonacci_20 --iterations 1 --warmup 0
+# Each run also executes this file's imports and setup before calling the
+# selected function. Compare the same benchmark across code revisions.
+
+import "lexer"
+| import "parser"
+| import "eval"
+| let _query = join(map(range(1, 64), fn(i): to_string(i) end), " + ")
+| let _long_query = join(map(range(1, 256), fn(i): to_string(i) end), " + ")
+| let _long_string_source = "\"" + join(map(range(0, 255), fn(i): "abcdefgh" end), "") + "\""
+| let _tokens = lexer::lex(_query)
+| let _ast = parser::mq_parse(_tokens)
+| let _lazy_ast = parser::mq_parse(lexer::lex("false && error(\"unreachable\")"))
+| let _fib_query = "def fib(n): if (n < 2): n else: fib(n - 1) + fib(n - 2) end | fib(20)"
+| let _fib_ast = parser::mq_parse(lexer::lex(_fib_query))
+|
+
+def native_fib(n):
+  if (n < 2): n else: native_fib(n - 1) + native_fib(n - 2)
+end
+
+def bench_lex_arithmetic():
+  lexer::lex(_query)
+end
+
+def bench_lex_long_arithmetic():
+  lexer::lex(_long_query)
+end
+
+def bench_lex_long_string():
+  lexer::lex(_long_string_source)
+end
+
+def bench_full_long_string():
+  eval::mq_eval(parser::mq_parse(lexer::lex(_long_string_source)), None, {})[:val]
+end
+
+def bench_parse_arithmetic():
+  parser::mq_parse(_tokens)
+end
+
+def bench_eval_arithmetic():
+  eval::mq_eval(_ast, None, {})[:val]
+end
+
+def bench_full_arithmetic():
+  let tokens = lexer::lex(_query)
+  | let ast = parser::mq_parse(tokens)
+  | eval::mq_eval(ast, None, {})[:val]
+end
+
+def bench_lazy_boolean():
+  eval::mq_eval(_lazy_ast, None, {})[:val]
+end
+
+def bench_native_fibonacci_20():
+  native_fib(20)
+end
+
+def bench_mqmq_fibonacci_20():
+  eval::mq_eval(_fib_ast, None, {})[:val]
+end
+
+# Smaller case for quick checks while tuning; fib(20) is the comparison target.
+def bench_mqmq_fibonacci_12():
+  let query = "def fib(n): if (n < 2): n else: fib(n - 1) + fib(n - 2) end | fib(12)"
+  | eval::mq_eval(parser::mq_parse(lexer::lex(query)), None, {})[:val]
+end

@@ -13,11 +13,6 @@ import "yaml" |
 
 # ── environment helpers ───────────────────────────────────────────────────────
 
-## Look up a name in the environment; returns None if not found (caller must check).
-def _env_get(env, name):
-  env[name]
-end
-
 ## Bind a name in the environment, returning the new env.
 def _env_set(env, name, val):
   set(env, name, val)
@@ -431,6 +426,8 @@ end
 def _call_user_fn(fn_val, args_vals, value, env):
   let params = fn_val[:params]
   | var call_env = fn_val[:env]
+  | if (!is_none(fn_val[:name])):
+      call_env = _env_set(call_env, fn_val[:name], fn_val)
   | var i = 0
   | while (i < len(params)):
       let p = params[i]
@@ -510,7 +507,37 @@ end
 ## Evaluate an AST node, returning {val: <result>, env: <env>}.
 def mq_eval(ast, value, env):
   let k = ast[:kind]
-  | if (k == "str"):   {val: ast[:val], env: env}
+  | if (k == "ident") do
+      let v = env[ast[:name]]
+      | if (is_none(v)):
+          {val: _eval_builtin(ast[:name], [], value, env), env: env}
+        else:
+          {val: v, env: env}
+    end
+    elif (k == "call") do
+      let args_vals = map(ast[:args], fn(a): mq_eval(a, value, env)[:val] end)
+      | let named = env[ast[:name]]
+      | let result = if (is_dict(named) && named[:kind] == "fn"):
+                       _call_user_fn(named, args_vals, value, env)
+                     else:
+                       _eval_builtin(ast[:name], args_vals, value, env)
+      | {val: result, env: env}
+    end
+    elif (k == "bin") do
+      let lr = mq_eval(ast[:left], value, env)
+      | let op = ast[:op]
+      | if (op == "&&" && !lr[:val]):
+          {val: false, env: lr[:env]}
+        elif (op == "||" && lr[:val]):
+          {val: lr[:val], env: lr[:env]}
+        elif (op == "??" && !is_none(lr[:val])):
+          {val: lr[:val], env: lr[:env]}
+        else do
+          let rr = mq_eval(ast[:right], value, lr[:env])
+          | {val: _eval_bin(op, lr[:val], rr[:val]), env: rr[:env]}
+        end
+    end
+    elif (k == "str"):   {val: ast[:val], env: env}
     elif (k == "num"):  {val: ast[:val], env: env}
     elif (k == "bool"): {val: ast[:val], env: env}
     elif (k == "none"): {val: None, env: env}
@@ -518,13 +545,6 @@ def mq_eval(ast, value, env):
     elif (k == "self"): {val: value, env: env}
     elif (k == "dot"):  {val: value, env: env}
     elif (k == "nodes"): {val: env["__nodes__"], env: env}
-    elif (k == "ident") do
-      let v = _env_get(env, ast[:name])
-      | if (is_none(v)):
-          {val: _eval_builtin(ast[:name], [], value, env), env: env}
-        else:
-          {val: v, env: env}
-    end
     elif (k == "sel"):   {val: _eval_sel(ast[:name], value), env: env}
     elif (k == "if"):    _eval_if_node(ast, value, env)
     elif (k == "unless"): _eval_unless(ast, value, env)
@@ -639,20 +659,9 @@ def mq_eval(ast, value, env):
     end
 
     elif (k == "def") do
-      let fn_val = {kind: "fn", params: ast[:params], body: ast[:body], env: env}
+      let fn_val = {kind: "fn", name: ast[:name], params: ast[:params], body: ast[:body], env: env}
       | let new_env = _env_set(env, ast[:name], fn_val)
       | {val: fn_val, env: new_env}
-    end
-
-    elif (k == "call") do
-      let args_vals = map(ast[:args], fn(a): mq_eval(a, value, env)[:val] end)
-      | {val: _eval_builtin(ast[:name], args_vals, value, env), env: env}
-    end
-
-    elif (k == "bin") do
-      let lr = mq_eval(ast[:left], value, env)
-      | let rr = mq_eval(ast[:right], value, lr[:env])
-      | {val: _eval_bin(ast[:op], lr[:val], rr[:val]), env: rr[:env]}
     end
 
     elif (k == "un") do

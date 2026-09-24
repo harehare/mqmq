@@ -24,6 +24,12 @@ let _KWS = {
   "module": true, "match": true, "break": true, "continue": true, "loop": true,
   "try": true, "catch": true, "self": true, "nodes": true,
 }
+| let _TWO_OPS = {
+  "||": true, "|=": true, "&&": true, "==": true, "=~": true,
+  "!=": true, "!~": true, "<=": true, "<<": true, ">=": true,
+  ">>": true, "+=": true, "-=": true, "->": true, "*=": true,
+  "/=": true, "%=": true, "??": true,
+}
 |
 
 ## Direct range comparisons instead of `regex_match`: identifier/digit
@@ -82,25 +88,47 @@ def _lex_escape(chars, j, n):
       else: {ch: nc, j: j + 1}
 end
 
-# Scan a `${...}` expression body starting just past the opening brace;
-# returns the index of the matching closing brace (brace-depth aware).
+# Scan a `${...}` expression body starting just past the opening brace.
+# Braces inside strings and comments are data, not expression delimiters.
 def _scan_until_brace(chars, start, n):
   var depth = 1
   | var k = start
+  | var quote = ""
+  | var in_comment = false
   | while (k < n && depth > 0):
-      if (chars[k] == "{") do
+      let c = chars[k]
+      | if (in_comment) do
+          if (c == "\n"): in_comment = false
+          | k += 1
+        end
+        elif (!is_empty(quote)) do
+          if (c == "\\" && k + 1 < n):
+            k += 2
+          else do
+            if (c == quote): quote = ""
+            | k += 1
+          end
+        end
+        elif (c == "\"" || c == "'") do
+          quote = c
+          | k += 1
+        end
+        elif (c == "#") do
+          in_comment = true
+          | k += 1
+        end
+        elif (c == "{") do
           depth += 1
           | k += 1
         end
-      elif (chars[k] == "}") do
+        elif (c == "}") do
           depth -= 1
           | if (depth > 0): k += 1
         end
-      else do
-        k += 1
-      end
+        else:
+          k += 1
     end
-  | k
+  | if (depth == 0): k else: error("Unclosed interpolation expression")
 end
 
 # Lex an interpolated string s"...${expr}..." starting at the opening quote
@@ -134,271 +162,108 @@ def _lex_interp_string(chars, i, n):
   | {segs: segs, j: j + 1}
 end
 
-## Tokenize an mq query string into a list of tokens.
-def lex(query):
-  # Grapheme-split once up front (see `_slice`'s doc comment above): the rest
-  # of this function indexes/slices the resulting array instead of the raw
-  # string, which keeps the whole scan linear in the query's length.
-  let chars = graphemes(query)
-  | var toks = []
-  | var i = 0
-  | let n = len(chars)
-  | while (i < n):
-      let c = chars[i]
-      | if (_is_ws(c)):
-          i += 1
-
-        elif (c == "#") do
-          let j = _scan_while(chars, i + 1, n, fn(ch): ch != "\n" end)
-          | i = j
+## Scan one token, returning the token and the next unread character index.
+## Whitespace and comments return no token.
+def _lex_one(chars, i, n):
+  let c = chars[i]
+  | if (_is_ws(c)):
+      {tok: None, next: i + 1}
+    elif (c == "#"):
+      {tok: None, next: _scan_while(chars, i + 1, n, fn(ch): ch != "\n" end)}
+    elif (c == ".") do
+      if (i + 1 < n && _is_alpha(chars[i + 1])) do
+        let j = _scan_while(chars, i + 1, n, _is_alnum)
+        | {tok: _tok("sel", _slice(chars, i + 1, j)), next: j}
+      end
+      elif (i + 1 < n && chars[i + 1] == "."):
+        {tok: _tok("op", ".."), next: i + 2}
+      else:
+        {tok: _tok("dot", "."), next: i + 1}
+    end
+    elif (c == ":") do
+      if (i + 1 < n && chars[i + 1] == ":"):
+        {tok: _tok("op", "::"), next: i + 2}
+      elif (i + 1 < n && _is_alpha(chars[i + 1])) do
+        let j = _scan_while(chars, i + 1, n, _is_alnum)
+        | {tok: _tok("atom", _slice(chars, i + 1, j)), next: j}
+      end
+      else:
+        {tok: _tok("op", ":"), next: i + 1}
+    end
+    elif (c == "s" && i + 1 < n && chars[i + 1] == "\"") do
+      let r = _lex_interp_string(chars, i + 1, n)
+      | {tok: _tok("istr", r[:segs]), next: r[:j]}
+    end
+    elif (_is_alpha(c)) do
+      let j = _scan_while(chars, i, n, _is_alnum)
+      | let word = _slice(chars, i, j)
+      | let tok = if (word == "true" || word == "false"):
+                    _tok("bool", word)
+                  elif (word == "None"):
+                    _tok("none", "")
+                  elif (!is_none(_KWS[word])):
+                    _tok("kw", word)
+                  else:
+                    _tok("ident", word)
+      | {tok: tok, next: j}
+    end
+    elif (_is_digit(c)) do
+      var j = _scan_while(chars, i, n, _is_digit)
+      | if (j < n && chars[j] == "." && j + 1 < n && _is_digit(chars[j + 1])):
+          j = _scan_while(chars, j + 1, n, _is_digit)
+      | {tok: _tok("num", _slice(chars, i, j)), next: j}
+    end
+    elif (c == "\"" || c == "'") do
+      let delim = c
+      | var j = i + 1
+      | while (j < n && chars[j] != delim && chars[j] != "\\"):
+          j += 1
         end
-
-        elif (c == ".") do
-          if (i + 1 < n && _is_alpha(chars[i + 1])) do
-              let j = _scan_while(chars, i + 1, n, _is_alnum)
-              | toks += [_tok("sel", _slice(chars, i + 1, j))]
-              | i = j
-            end
-          elif (i + 1 < n && chars[i + 1] == ".") do
-              toks += [_tok("op", "..")]
-              | i += 2
-            end
-          else do
-            toks += [_tok("dot", ".")]
-            | i += 1
-          end
-        end
-
-        elif (c == ":") do
-          if (i + 1 < n && chars[i + 1] == ":") do
-              toks += [_tok("op", "::")]
-              | i += 2
-            end
-          elif (i + 1 < n && _is_alpha(chars[i + 1])) do
-              let j = _scan_while(chars, i + 1, n, _is_alnum)
-              | toks += [_tok("atom", _slice(chars, i + 1, j))]
-              | i = j
-            end
-          else do
-            toks += [_tok("op", ":")]
-            | i += 1
-          end
-        end
-
-        elif (c == "s" && i + 1 < n && chars[i + 1] == "\"") do
-          let r = _lex_interp_string(chars, i + 1, n)
-          | toks += [_tok("istr", r[:segs])]
-          | i = r[:j]
-        end
-
-        elif (_is_alpha(c)) do
-          let j = _scan_while(chars, i, n, _is_alnum)
-          | let word = _slice(chars, i, j)
-          | if (word == "true"):
-              toks += [_tok("bool", "true")]
-            elif (word == "false"):
-              toks += [_tok("bool", "false")]
-            elif (word == "None"):
-              toks += [_tok("none", "")]
-            elif (!is_none(_KWS[word])):
-              toks += [_tok("kw", word)]
-            else:
-              toks += [_tok("ident", word)]
-          | i = j
-        end
-
-        elif (_is_digit(c)) do
-          var j = _scan_while(chars, i, n, _is_digit)
-          | if (j < n && chars[j] == "." && j + 1 < n && _is_digit(chars[j + 1])) do
-              j = _scan_while(chars, j + 1, n, _is_digit)
-            end
-          | toks += [_tok("num", _slice(chars, i, j))]
-          | i = j
-        end
-
-        elif (c == "\"" || c == "'") do
-          let delim = c
-          | var j = i + 1
-          | var s = ""
+      | if (j >= n || chars[j] == delim):
+          {tok: _tok("str", _slice(chars, i + 1, j)), next: j + 1}
+        else do
+          var s = _slice(chars, i + 1, j)
           | while (j < n && chars[j] != delim):
               if (chars[j] == "\\" && j + 1 < n) do
-                  let esc = _lex_escape(chars, j + 1, n)
-                  | s += esc[:ch]
-                  | j = esc[:j]
-                end
+                let esc = _lex_escape(chars, j + 1, n)
+                | s += esc[:ch]
+                | j = esc[:j]
+              end
               else do
                 s += chars[j]
                 | j += 1
               end
             end
-          | toks += [_tok("str", s)]
-          | i = j + 1
-        end
-
-        elif (c == "|") do
-          if (i + 1 < n && chars[i + 1] == "|") do
-              toks += [_tok("op", "||")]
-              | i += 2
-            end
-          elif (i + 1 < n && chars[i + 1] == "=") do
-              toks += [_tok("op", "|=")]
-              | i += 2
-            end
-          else do
-            toks += [_tok("op", "|")]
-            | i += 1
-          end
-        end
-
-        elif (c == "&") do
-          if (i + 1 < n && chars[i + 1] == "&") do
-              toks += [_tok("op", "&&")]
-              | i += 2
-            end
-          else do
-            toks += [_tok("op", "&")]
-            | i += 1
-          end
-        end
-
-        elif (c == "=") do
-          if (i + 1 < n && chars[i + 1] == "=") do
-              toks += [_tok("op", "==")]
-              | i += 2
-            end
-          elif (i + 1 < n && chars[i + 1] == "~") do
-              toks += [_tok("op", "=~")]
-              | i += 2
-            end
-          else do
-            toks += [_tok("op", "=")]
-            | i += 1
-          end
-        end
-
-        elif (c == "!") do
-          if (i + 1 < n && chars[i + 1] == "=") do
-              toks += [_tok("op", "!=")]
-              | i += 2
-            end
-          elif (i + 1 < n && chars[i + 1] == "~") do
-              toks += [_tok("op", "!~")]
-              | i += 2
-            end
-          else do
-            toks += [_tok("op", "!")]
-            | i += 1
-          end
-        end
-
-        elif (c == "<") do
-          if (i + 1 < n && chars[i + 1] == "=") do
-              toks += [_tok("op", "<=")]
-              | i += 2
-            end
-          elif (i + 1 < n && chars[i + 1] == "<") do
-              toks += [_tok("op", "<<")]
-              | i += 2
-            end
-          else do
-            toks += [_tok("op", "<")]
-            | i += 1
-          end
-        end
-
-        elif (c == ">") do
-          if (i + 1 < n && chars[i + 1] == "=") do
-              toks += [_tok("op", ">=")]
-              | i += 2
-            end
-          elif (i + 1 < n && chars[i + 1] == ">") do
-              toks += [_tok("op", ">>")]
-              | i += 2
-            end
-          else do
-            toks += [_tok("op", ">")]
-            | i += 1
-          end
-        end
-
-        elif (c == "+") do
-          if (i + 1 < n && chars[i + 1] == "=") do
-              toks += [_tok("op", "+=")]
-              | i += 2
-            end
-          else do
-            toks += [_tok("op", "+")]
-            | i += 1
-          end
-        end
-
-        elif (c == "-") do
-          if (i + 1 < n && chars[i + 1] == "=") do
-              toks += [_tok("op", "-=")]
-              | i += 2
-            end
-          elif (i + 1 < n && chars[i + 1] == ">") do
-              toks += [_tok("op", "->")]
-              | i += 2
-            end
-          else do
-            toks += [_tok("op", "-")]
-            | i += 1
-          end
-        end
-
-        elif (c == "*") do
-          if (i + 1 < n && chars[i + 1] == "=") do
-              toks += [_tok("op", "*=")]
-              | i += 2
-            end
-          else do
-            toks += [_tok("op", "*")]
-            | i += 1
-          end
-        end
-
-        elif (c == "/") do
-          if (i + 1 < n && chars[i + 1] == "=") do
-              toks += [_tok("op", "/=")]
-              | i += 2
-            end
-          elif (i + 2 < n && chars[i + 1] == "/" && chars[i + 2] == "=") do
-              toks += [_tok("op", "//=")]
-              | i += 3
-            end
-          else do
-            toks += [_tok("op", "/")]
-            | i += 1
-          end
-        end
-
-        elif (c == "%") do
-          if (i + 1 < n && chars[i + 1] == "=") do
-              toks += [_tok("op", "%=")]
-              | i += 2
-            end
-          else do
-            toks += [_tok("op", "%")]
-            | i += 1
-          end
-        end
-
-        elif (c == "?") do
-          if (i + 1 < n && chars[i + 1] == "?") do
-              toks += [_tok("op", "??")]
-              | i += 2
-            end
-          else do
-            toks += [_tok("op", "?")]
-            | i += 1
-          end
-        end
-
-        else do
-          toks += [_tok("op", c)]
-          | i += 1
+          | {tok: _tok("str", s), next: j + 1}
         end
     end
+    else do
+      let two = if (i + 1 < n): c + chars[i + 1] else: c
+      | let op = if (two == "//" && i + 2 < n && chars[i + 2] == "="):
+                   "//="
+                 elif (!is_none(_TWO_OPS[two])):
+                   two
+                 else:
+                   c
+      | {tok: _tok("op", op), next: i + len(op)}
+    end
+end
+
+## Tokenize an mq query string. `foreach` collects emitted tokens in place;
+## the index skips characters already consumed by a multi-character token.
+def lex(query):
+  let chars = graphemes(query)
+  | let n = len(chars)
+  | var next = 0
+  | let toks = if (n == 0): []
+               else: foreach (pos, range(0, n - 1)):
+                 if (pos < next): continue
+                 else do
+                   let step = _lex_one(chars, pos, n)
+                   | next = step[:next]
+                   | if (is_none(step[:tok])): continue
+                     else: step[:tok]
+                 end
+               end
   | toks + [_tok("eof", "")]
 end

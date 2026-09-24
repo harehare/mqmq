@@ -52,6 +52,25 @@ def test_lex(input, expected):
   assert_eq(_lex(input), expected)
 end
 
+def test_empty_query():
+  assert_eq(_lex(""), [])
+end
+
+def test_all_multi_character_operators():
+  let source = "+= -= *= /= %= //= |= -> && || == =~ != !~ <= << >= >> ?? :: .."
+  | assert_eq(map(_lex(source), fn(tok): tok[:v] end), split(source, " "))
+end
+
+def test_long_plain_and_escaped_strings():
+  let long = join(map(range(0, 255), fn(i): "abcdefgh" end), "")
+  | assert_eq(_lex("\"" + long + "\"")[0], _tok("str", long))
+  | assert_eq(_lex("\"a\\nb\"")[0], _tok("str", "a\nb"))
+end
+
+def test_unicode_graphemes():
+  assert_eq(_lex("\"👩‍💻\" ☃ x"), [_tok("str", "👩‍💻"), _tok("op", "☃"), _tok("ident", "x")])
+end
+
 # -- interpolated strings (single istr token carrying parsed segments) --
 
 def test_interp_string_is_single_token():
@@ -67,4 +86,22 @@ end
 def test_interp_string_no_expr():
   let toks = _lex("s\"plain\"")
   | assert_eq(toks[0][:v], [{kind: "text", val: "plain"}])
+end
+
+def test_interp_brace_in_quoted_expression():
+  let toks = _lex("s\"x${\"}\"}y\"")
+  | assert_eq(toks[0][:v], [
+      {kind: "text", val: "x"},
+      {kind: "expr", val: "\"}\""},
+      {kind: "text", val: "y"},
+    ])
+end
+
+def test_interp_brace_in_comment():
+  let toks = _lex("s\"x${1 # }\n + 2}y\"")
+  | assert_eq(toks[0][:v], [
+      {kind: "text", val: "x"},
+      {kind: "expr", val: "1 # }\n + 2"},
+      {kind: "text", val: "y"},
+    ])
 end
