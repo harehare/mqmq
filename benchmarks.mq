@@ -8,6 +8,8 @@ import "lexer"
 | let _query = join(map(range(1, 64), fn(i): to_string(i) end), " + ")
 | let _long_query = join(map(range(1, 256), fn(i): to_string(i) end), " + ")
 | let _long_string_source = "\"" + join(map(range(0, 255), fn(i): "abcdefgh" end), "") + "\""
+| let _long_escaped_source = "\"" + join(map(range(0, 255), fn(i): "a\\nbcdef" end), "") + "\""
+| let _long_interp_source = "s\"" + join(map(range(0, 255), fn(i): "abcdefgh" end), "") + "\""
 | let _tokens = lexer::lex(_query)
 | let _ast = parser::mq_parse(_tokens)
 | let _lazy_ast = parser::mq_parse(lexer::lex("false && error(\"unreachable\")"))
@@ -29,6 +31,14 @@ end
 
 def bench_lex_long_string():
   lexer::lex(_long_string_source)
+end
+
+def bench_lex_long_escaped_string():
+  lexer::lex(_long_escaped_source)
+end
+
+def bench_lex_long_interpolated_string():
+  lexer::lex(_long_interp_source)
 end
 
 def bench_full_long_string():

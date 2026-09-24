@@ -150,7 +150,21 @@ end
 
 # Lex an interpolated string s"...${expr}..." starting at the opening quote
 # (index i). Returns {segs: [{kind:"text",val} | {kind:"expr",val}], j: <end>}.
+# Common case: an interpolated string with no escapes or expressions needs
+# only one slice, rather than a character-by-character string build.
 def _lex_interp_string(chars, i, n):
+  var j = i + 1
+  | while (j < n && chars[j] != "\"" && chars[j] != "\\" &&
+           !(chars[j] == "$" && j + 1 < n && chars[j + 1] == "{")):
+      j += 1
+    end
+  | if (j >= n || chars[j] == "\""):
+      {segs: if (j == i + 1): [] else: [{kind: "text", val: _slice(chars, i + 1, j)}], j: j + 1}
+    else:
+      _lex_interp_string_complex(chars, i, n)
+end
+
+def _lex_interp_string_complex(chars, i, n):
   var j = i + 1
   | var segs = []
   | var buf = ""
@@ -239,19 +253,21 @@ def _lex_one(chars, i, n):
       | if (j >= n || chars[j] == delim):
           {tok: _tok("str", _slice(chars, i + 1, j)), next: j + 1}
         else do
-          var s = _slice(chars, i + 1, j)
-          | while (j < n && chars[j] != delim):
-              if (chars[j] == "\\" && j + 1 < n) do
-                let esc = _lex_escape(chars, j + 1, n)
-                | s += esc[:ch]
+          let prefix = _slice(chars, i + 1, j)
+          | let suffix = foreach (pos, range(j, n - 1)):
+              if (pos < j): continue
+              elif (chars[pos] == delim): break
+              elif (chars[pos] == "\\" && pos + 1 < n) do
+                let esc = _lex_escape(chars, pos + 1, n)
                 | j = esc[:j]
+                | esc[:ch]
               end
               else do
-                s += chars[j]
-                | j += 1
+                j = pos + 1
+                | chars[pos]
               end
             end
-          | {tok: _tok("str", s), next: j + 1}
+          | {tok: _tok("str", prefix + join(suffix, "")), next: j + 1}
         end
     end
     else do
