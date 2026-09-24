@@ -30,6 +30,14 @@ let _KWS = {
   ">>": true, "+=": true, "-=": true, "->": true, "*=": true,
   "/=": true, "%=": true, "??": true,
 }
+## One alternative per token shape, tried in order: comment, selector, atom,
+## word, number, the two string forms, then every multi-character operator.
+## The final alternative takes any other single character except whitespace,
+## so the matches cover everything but the whitespace between tokens.
+| let _TOKEN_RE = "(?s)#[^\\n\\r]*|\\.[A-Za-z_][A-Za-z0-9_]*|:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*|[0-9]+(?:\\.[0-9]+)?|\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|//=|\\|\\||\\|=|&&|==|=~|!=|!~|<=|<<|>=|>>|\\+=|-=|->|\\*=|/=|%=|\\?\\?|\\.\\.|::|[^ \\t\\n\\r]"
+## An `s"` that starts a word begins an interpolated string, which needs the
+## character scanner to find its `${...}` segments.
+| let _INTERP_RE = "(?:^|[^A-Za-z0-9_])s\""
 |
 
 ## Direct range comparisons instead of `regex_match`: identifier/digit
@@ -282,9 +290,81 @@ def _lex_one(chars, i, n):
     end
 end
 
-## Tokenize an mq query string. `foreach` collects emitted tokens in place;
-## the index skips characters already consumed by a multi-character token.
+## Tokenize an mq query string.
+##
+## Scanning a query one character at a time costs several interpreted calls
+## per character. The host regex engine can split the query into lexemes in one
+## native call instead, leaving only one classification step per lexeme.
+## Queries the lexeme split can't represent exactly fall back to the
+## character scanner: interpolated strings, unterminated strings, non-ASCII
+## characters outside strings, and multi-code-point graphemes (regex matches
+## are made of code points, while the character scanner works on graphemes).
 def lex(query):
+  let fast = if (is_regex_match(query, _INTERP_RE) || !_single_code_point_graphemes(query)): None
+             else: _lex_lexemes(query)
+  | if (is_none(fast)): _lex_chars(query) else: fast
+end
+
+## True when every grapheme other than "\r\n" is a single code point, so
+## lexeme boundaries can't split a grapheme.
+def _single_code_point_graphemes(query):
+  if (is_regex_match(query, "[^\\x00-\\x7F]")):
+    len(graphemes(query)) + len(regex_match(query, "\r\n")) == len(regex_match(query, "(?s)."))
+  else: true
+end
+
+## Classify the lexemes of `_TOKEN_RE`. Returns None when the query needs the
+## character scanner.
+def _lex_lexemes(query):
+  var ok = true
+  | let toks = foreach (lx, regex_match(query, _TOKEN_RE)):
+      # Character tests are inlined; this runs once per token.
+      let c = lx[0]
+      | if ((c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c == "_"):
+          if (lx == "true" || lx == "false"): {t: "bool", v: lx}
+          elif (lx == "None"): {t: "none", v: ""}
+          elif (!is_none(_KWS[lx])): {t: "kw", v: lx}
+          else: {t: "ident", v: lx}
+        elif (c >= "0" && c <= "9"): {t: "num", v: lx}
+        elif (len(lx) == 1) do
+          if (c == "."): {t: "dot", v: "."}
+          elif (c == "\"" || c == "'" || c >= "\u{80}") do
+            ok = false
+            | break
+          end
+          else: {t: "op", v: c}
+        end
+        elif (c == "#"): continue
+        elif (c == "\"" || c == "'") do
+          let body = lx[1:len(lx) - 1]
+          | {t: "str", v: if (contains(body, "\\")): _unescape(body) else: body}
+        end
+        elif (c == "." && lx != ".."): {t: "sel", v: lx[1:len(lx)]}
+        elif (c == ":" && lx != "::"): {t: "atom", v: lx[1:len(lx)]}
+        else: {t: "op", v: lx}
+    end
+  | if (ok): toks + [_tok("eof", "")] else: None
+end
+
+## Resolve the escape sequences in a string literal's body.
+def _unescape(s):
+  let chars = graphemes(s)
+  | let n = len(chars)
+  | var next = 0
+  | join(foreach (pos, range(0, n - 1)):
+      if (pos < next): continue
+      elif (chars[pos] == "\\" && pos + 1 < n) do
+        let esc = _lex_escape(chars, pos + 1, n)
+        | next = esc[:j]
+        | esc[:ch]
+      end
+      else: chars[pos]
+    end, "")
+end
+
+## Tokenize by scanning characters. `foreach` collects emitted tokens in place;
+## the index skips characters already consumed by a multi-character token.
+def _lex_chars(query):
   let chars = graphemes(query)
   | let n = len(chars)
   | var next = 0

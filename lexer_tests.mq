@@ -120,3 +120,34 @@ def test_interp_brace_in_crlf_comment():
       {kind: "text", val: "y"},
     ])
 end
+
+# -- regex lexeme fast path --
+# lex() splits most queries with one regex call and falls back to the
+# character scanner otherwise. Both must produce the same tokens.
+
+# @parametrize([
+#   ["1.5 1..5 1. .5 ..a .h1.text . . :: :a::b : a:b"],
+#   ["\"\" '' \"a\\\"b\" 'a\\'b' \"a\\\\\" \"a\\nb\\tc\\q\" \"multi\nline\""],
+#   ["\"unterminated"],
+#   ["'u"],
+#   ["\"a\\"],
+#   ["x //= 2 // 3 /= 4 a=>b `$^@~\\ !x"],
+#   ["a||b|=c&&d==e=~f!=g!~h<=i<<j>=k>>l+=m-=n->o*=p/=q%=r??s"],
+#   ["# comment\n1 # c\r\n2\t\n\r"],
+#   ["True False None true false nones"],
+#   ["\"a\" + \"#\" + '.' # \"é\""],
+#   ["\"日本語\" + \"見出し\""],
+#   ["a é"],
+#   ["\"\u{301}\""],
+#   ["\"a\u{200d}b\" + \"👍🏽\""],
+#   ["is\"x\" + has \"s\""],
+#   ["1 +\u{c}2"],
+#   ["{a: 1, \"b\": [1, 2]} | f(x)[0][:k][1:2]?"],
+# ])
+def test_lexeme_fast_path_matches_scanner(query):
+  assert_eq(lexer::lex(query), lexer::_lex_chars(query))
+end
+
+def test_lexeme_fast_path_used():
+  assert_eq(is_none(lexer::_lex_lexemes("let x = \"日本語\" | x + 1")), false)
+end

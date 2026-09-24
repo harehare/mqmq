@@ -9,7 +9,17 @@
 #   value - current "self" value flowing through the pipeline
 #   env   - dict of variable bindings {name: value, ...}
 
-import "yaml" |
+import "yaml"
+## Node kinds whose mq_eval result env is always the env they were given
+## (call, arr, dict, and interp discard their children's envs). A value-only
+## evaluation of these needs no {val, env} pair, and a sibling evaluated after
+## one of them can reuse the original env.
+| let _KEEPS_ENV = {
+  "ident": true, "call": true, "str": true, "num": true, "bool": true,
+  "none": true, "atom": true, "self": true, "dot": true, "nodes": true,
+  "sel": true, "fn": true, "arr": true, "dict": true, "interp": true,
+}
+|
 
 # ── environment helpers ───────────────────────────────────────────────────────
 
@@ -73,7 +83,7 @@ def _match_pattern(pat, val, env):
     elif (k == "typepat"):
       {matched: _match_type(pat[:name], val), env: env}
     elif (k == "litpat") do
-      let lit_val = mq_eval(pat[:val], val, env)[:val]
+      let lit_val = _ev(pat[:val], val, env)
       | {matched: val == lit_val, env: env}
     end
     elif (k == "orpat") do
@@ -111,7 +121,7 @@ def _try_match_arms(arms, matchval, value, env):
   | while (i < n && is_none(result)):
       let arm = arms[i]
       | let mr = _match_pattern(arm[:pattern], matchval, env)
-      | if (mr[:matched] && (is_none(arm[:guard]) || mq_eval(arm[:guard], value, mr[:env])[:val])):
+      | if (mr[:matched] && (is_none(arm[:guard]) || _ev(arm[:guard], value, mr[:env]))):
           result = mq_eval(arm[:body], value, mr[:env])
       | i += 1
     end
@@ -124,7 +134,7 @@ end
 def _apply1(fn_val, arg, env):
   let p = if (is_empty(fn_val[:params])): "_" else: fn_val[:params][0][:name]
   | let call_env = set(fn_val[:env], p, arg)
-  | mq_eval(fn_val[:body], arg, call_env)[:val]
+  | _ev(fn_val[:body], arg, call_env)
 end
 
 ## Left-fold arr with fn(acc, item), starting from init. (No native `reduce`
@@ -141,7 +151,7 @@ def _reduce(arr, init, fn_val, env):
     | let n = len(arr)
     | while (i < n):
         let item = arr[i]
-        | acc = mq_eval(body, acc, set(set(closure_env, p1, acc), p2, item))[:val]
+        | acc = _ev(body, acc, set(set(closure_env, p1, acc), p2, item))
         | i += 1
       end
     | acc
@@ -164,7 +174,7 @@ def _apply2(fn_val, a1, a2, env):
   | let p1 = if (len(params) > 0): params[0][:name] else: "_"
   | let p2 = if (len(params) > 1): params[1][:name] else: "_"
   | let call_env = set(set(fn_val[:env], p1, a1), p2, a2)
-  | mq_eval(fn_val[:body], a1, call_env)[:val]
+  | _ev(fn_val[:body], a1, call_env)
 end
 
 # ── moku Markdown filters ────────────────────────────────────────────────────
@@ -327,7 +337,7 @@ def _eval_builtin(name, args_vals, value, env):
         let p = if (is_empty(a1[:params])): "_" else: a1[:params][0][:name]
         | let closure_env = a1[:env]
         | let body = a1[:body]
-        | map(a0, fn(item): mq_eval(body, item, set(closure_env, p, item))[:val] end)
+        | map(a0, fn(item): _ev(body, item, set(closure_env, p, item)) end)
       end
       else:
         map(a0, fn(item): _apply1(a1, item, env) end)
@@ -337,7 +347,7 @@ def _eval_builtin(name, args_vals, value, env):
         let p = if (is_empty(a1[:params])): "_" else: a1[:params][0][:name]
         | let closure_env = a1[:env]
         | let body = a1[:body]
-        | filter(a0, fn(item): mq_eval(body, item, set(closure_env, p, item))[:val] end)
+        | filter(a0, fn(item): _ev(body, item, set(closure_env, p, item)) end)
       end
       else:
         filter(a0, fn(item): _apply1(a1, item, env) end)
@@ -458,12 +468,12 @@ def _call_user_fn(fn_val, args_vals, value, env):
   | while (i < len(params)):
       let p = params[i]
       | let arg_val = if (i < len(args_vals)): args_vals[i]
-                      elif (!is_none(p[:default])): mq_eval(p[:default], value, call_env)[:val]
+                      elif (!is_none(p[:default])): _ev(p[:default], value, call_env)
                       else: None
       | call_env = set(call_env, p[:name], arg_val)
       | i += 1
     end
-  | mq_eval(fn_val[:body], value, call_env)[:val]
+  | _ev(fn_val[:body], value, call_env)
 end
 
 # ── conversion operator (@) ─────────────────────────────────────────────────
@@ -528,6 +538,114 @@ def _eval_bin(op, left_val, right_val):
     else: error("Unknown binary operator: " + op)
 end
 
+# ── value-only evaluation ─────────────────────────────────────────────────────
+
+## Evaluate an AST node for its value alone. Most nodes are leaves, calls, or
+## operators, and returning their value directly avoids allocating a
+## {val, env} pair per node. Kinds that can change the env or carry a
+## break/continue signal fall back to mq_eval; callers of _ev discard both.
+def _ev(ast, value, env):
+  let k = ast[:kind]
+  | if (k == "ident") do
+      let v = env[ast[:name]]
+      | if (is_none(v)): _eval_builtin(ast[:name], [], value, env) else: v
+    end
+    elif (k == "num" || k == "str" || k == "bool"): ast[:val]
+    elif (k == "call"): _ev_call(ast, value, env)
+    elif (k == "bin"): _ev_bin(ast, value, env)
+    elif (k == "if"): _ev_if(ast, value, env)
+    elif (k == "self" || k == "dot"): value
+    elif (k == "none"): None
+    elif (k == "un") do
+      let v = _ev(ast[:expr], value, env)
+      | if (ast[:op] == "!"): !v
+        elif (ast[:op] == "-"): 0 - v
+        else: v
+    end
+    elif (k == "dkey"): _ev(ast[:base], value, env)[ast[:key]]
+    else: mq_eval(ast, value, env)[:val]
+end
+
+def _ev_call(ast, value, env):
+  let args = ast[:args]
+  | let n = len(args)
+  | let args_vals = if (n == 0): []
+                    elif (n == 1): [_ev(args[0], value, env)]
+                    else: map(args, fn(a): _ev(a, value, env) end)
+  | let named = env[ast[:name]]
+  | if (is_dict(named) && named[:kind] == "fn"):
+      _call_user_fn(named, args_vals, value, env)
+    else:
+      _eval_builtin(ast[:name], args_vals, value, env)
+end
+
+## The right operand still sees any bindings the left operand made, as in
+## mq_eval's "bin" case.
+def _ev_bin(ast, value, env):
+  let left = ast[:left]
+  | let op = ast[:op]
+  | if (_KEEPS_ENV[left[:kind]]) do
+      let lv = _ev(left, value, env)
+      | if (op == "&&" && !lv): false
+        elif (op == "||" && lv): lv
+        elif (op == "??" && !is_none(lv)): lv
+        else: _eval_bin(op, lv, _ev(ast[:right], value, env))
+    end
+    else do
+      let lr = mq_eval(left, value, env)
+      | let lv = lr[:val]
+      | if (op == "&&" && !lv): false
+        elif (op == "||" && lv): lv
+        elif (op == "??" && !is_none(lv)): lv
+        else: _eval_bin(op, lv, _ev(ast[:right], value, lr[:env]))
+    end
+end
+
+def _ev_if(ast, value, env):
+  if (_ev(ast[:cond], value, env)): _ev(ast[:then], value, env)
+  else do
+    let elifs = ast[:elifs]
+    | let n = len(elifs)
+    | var i = 0
+    | var branch = ast[:else_br]
+    | while (i < n):
+        let e = elifs[i]
+        | if (_ev(e[:cond], value, env)) do
+            branch = e[:body]
+            | i = n
+          end
+          else: i += 1
+      end
+    | if (is_none(branch)): None else: _ev(branch, value, env)
+  end
+end
+
+## Like mq_eval, but without its {val, env} result for a node that keeps its
+## env, so a binding's value costs one pair instead of two.
+def _eval_keep_env(ast, value, env):
+  if (_KEEPS_ENV[ast[:kind]]): {val: _ev(ast, value, env), env: env}
+  else: mq_eval(ast, value, env)
+end
+
+## General "bin" case: bindings made by the left operand are visible to the
+## right operand and in the result env.
+def _eval_bin_node(ast, value, env):
+  let lr = _eval_keep_env(ast[:left], value, env)
+  | let op = ast[:op]
+  | if (op == "&&" && !lr[:val]):
+      {val: false, env: lr[:env]}
+    elif (op == "||" && lr[:val]):
+      {val: lr[:val], env: lr[:env]}
+    elif (op == "??" && !is_none(lr[:val])):
+      {val: lr[:val], env: lr[:env]}
+    elif (_KEEPS_ENV[ast[:right][:kind]]):
+      {val: _eval_bin(op, lr[:val], _ev(ast[:right], value, lr[:env])), env: lr[:env]}
+    else do
+      let rr = mq_eval(ast[:right], value, lr[:env])
+      | {val: _eval_bin(op, lr[:val], rr[:val]), env: rr[:env]}
+    end
+end
+
 # ── main evaluator ────────────────────────────────────────────────────────────
 
 ## Evaluate an AST node, returning {val: <result>, env: <env>}.
@@ -540,48 +658,12 @@ def mq_eval(ast, value, env):
         else:
           {val: v, env: env}
     end
-    elif (k == "call") do
-      let args = ast[:args]
-      | let args_vals = if (len(args) == 1): [mq_eval(args[0], value, env)[:val]]
-                        else: map(args, fn(a): mq_eval(a, value, env)[:val] end)
-      | let named = env[ast[:name]]
-      | let result = if (is_dict(named) && named[:kind] == "fn"):
-                       _call_user_fn(named, args_vals, value, env)
-                     else:
-                       _eval_builtin(ast[:name], args_vals, value, env)
-      | {val: result, env: env}
-    end
-    elif (k == "bin") do
-      let lr = mq_eval(ast[:left], value, env)
-      | let op = ast[:op]
-      | if (op == "&&" && !lr[:val]):
-          {val: false, env: lr[:env]}
-        elif (op == "||" && lr[:val]):
-          {val: lr[:val], env: lr[:env]}
-        elif (op == "??" && !is_none(lr[:val])):
-          {val: lr[:val], env: lr[:env]}
-        else do
-          let rr = mq_eval(ast[:right], value, lr[:env])
-          | {val: _eval_bin(op, lr[:val], rr[:val]), env: rr[:env]}
-        end
-    end
-    elif (k == "str"):   {val: ast[:val], env: env}
-    elif (k == "num"):  {val: ast[:val], env: env}
-    elif (k == "bool"): {val: ast[:val], env: env}
-    elif (k == "none"): {val: None, env: env}
-    elif (k == "atom"): {val: ast[:name], env: env}
-    elif (k == "self"): {val: value, env: env}
-    elif (k == "dot"):  {val: value, env: env}
-    elif (k == "nodes"): {val: env["__nodes__"], env: env}
-    elif (k == "sel"):   {val: _eval_sel(ast[:name], value), env: env}
-    elif (k == "if"):    _eval_if_node(ast, value, env)
-    elif (k == "unless"): _eval_unless(ast, value, env)
-    elif (k == "do"):    mq_eval(ast[:body], value, env)
-    elif (k == "fn"):    {val: {kind: "fn", params: ast[:params], body: ast[:body], env: env}, env: env}
-    elif (k == "while"):   _eval_while(ast, value, env)
-    elif (k == "until"):   _eval_until(ast, value, env)
-    elif (k == "foreach"): _eval_foreach(ast, value, env)
-
+    elif (k == "call"): {val: _ev_call(ast, value, env), env: env}
+    elif (k == "bin"):
+      if (_KEEPS_ENV[ast[:left][:kind]] && _KEEPS_ENV[ast[:right][:kind]]):
+        {val: _ev_bin(ast, value, env), env: env}
+      else:
+        _eval_bin_node(ast, value, env)
     elif (k == "pipe") do
       if (ast[:left][:kind] != "pipe") do
         let lr = mq_eval(ast[:left], value, env)
@@ -603,6 +685,22 @@ def mq_eval(ast, value, env):
         | result
       end
     end
+    elif (k == "str"):   {val: ast[:val], env: env}
+    elif (k == "num"):  {val: ast[:val], env: env}
+    elif (k == "bool"): {val: ast[:val], env: env}
+    elif (k == "none"): {val: None, env: env}
+    elif (k == "atom"): {val: ast[:name], env: env}
+    elif (k == "self"): {val: value, env: env}
+    elif (k == "dot"):  {val: value, env: env}
+    elif (k == "nodes"): {val: env["__nodes__"], env: env}
+    elif (k == "sel"):   {val: _eval_sel(ast[:name], value), env: env}
+    elif (k == "if"):    _eval_if_node(ast, value, env)
+    elif (k == "unless"): _eval_unless(ast, value, env)
+    elif (k == "do"):    mq_eval(ast[:body], value, env)
+    elif (k == "fn"):    {val: {kind: "fn", params: ast[:params], body: ast[:body], env: env}, env: env}
+    elif (k == "while"):   _eval_while(ast, value, env)
+    elif (k == "until"):   _eval_until(ast, value, env)
+    elif (k == "foreach"): _eval_foreach(ast, value, env)
 
     elif (k == "break") do
       if (is_none(ast[:val])):
@@ -619,7 +717,7 @@ def mq_eval(ast, value, env):
     elif (k == "interp") do
       let parts = map(ast[:segs], fn(s):
         if (s[:kind] == "text"): s[:val]
-        else: to_string(mq_eval(s[:node], value, env)[:val])
+        else: to_string(_ev(s[:node], value, env))
       end)
       | {val: join(parts, ""), env: env}
     end
@@ -659,32 +757,19 @@ def mq_eval(ast, value, env):
       | {val: None, env: new_env}
     end
 
-    elif (k == "let") do
-      let vr = mq_eval(ast[:val], value, env)
-      | let new_env = _env_set(vr[:env], ast[:name], vr[:val])
-      | {val: vr[:val], env: new_env}
+    elif (k == "let" || k == "var") do
+      let vr = _eval_keep_env(ast[:val], value, env)
+      | {val: vr[:val], env: _env_set(vr[:env], ast[:name], vr[:val])}
     end
 
-    elif (k == "var") do
-      let vr = mq_eval(ast[:val], value, env)
-      | let new_env = _env_set(vr[:env], ast[:name], vr[:val])
-      | {val: vr[:val], env: new_env}
-    end
-
-    elif (k == "let_destructure") do
-      let vr = mq_eval(ast[:val], value, env)
-      | let new_env = _bind_pattern(ast[:pattern], vr[:val], vr[:env])
-      | {val: vr[:val], env: new_env}
-    end
-
-    elif (k == "var_destructure") do
+    elif (k == "let_destructure" || k == "var_destructure") do
       let vr = mq_eval(ast[:val], value, env)
       | let new_env = _bind_pattern(ast[:pattern], vr[:val], vr[:env])
       | {val: vr[:val], env: new_env}
     end
 
     elif (k == "assign") do
-      let vr = mq_eval(ast[:val], value, env)
+      let vr = _eval_keep_env(ast[:val], value, env)
       | let op = ast[:op]
       | let cur_val = if (is_none(env[ast[:name]])): None else: env[ast[:name]]
       | let new_val = if (op == "="):   vr[:val]
@@ -714,7 +799,7 @@ def mq_eval(ast, value, env):
     end
 
     elif (k == "arr") do
-      let items = map(ast[:items], fn(a): mq_eval(a, value, env)[:val] end)
+      let items = map(ast[:items], fn(a): _ev(a, value, env) end)
       | {val: items, env: env}
     end
 
@@ -724,8 +809,8 @@ def mq_eval(ast, value, env):
       | var i = 0
       | while (i < len(ast[:pairs])):
           let pair = ast[:pairs][i]
-          | let key_v = mq_eval(pair[:key], value, cur_env)[:val]
-          | let val_v = mq_eval(pair[:val], value, cur_env)[:val]
+          | let key_v = _ev(pair[:key], value, cur_env)
+          | let val_v = _ev(pair[:val], value, cur_env)
           | d = set(d, key_v, val_v)
           | i += 1
         end
@@ -758,7 +843,7 @@ end
 # ── if / elif / else ──────────────────────────────────────────────────────────
 
 def _eval_if_node(ast, value, env):
-  let cond_val = mq_eval(ast[:cond], value, env)[:val]
+  let cond_val = _ev(ast[:cond], value, env)
   | if (cond_val):
       mq_eval(ast[:then], value, env)
     else:
@@ -767,7 +852,7 @@ end
 
 ## unless (cond): body -- runs body only when cond is false, else yields None.
 def _eval_unless(ast, value, env):
-  let cond_val = mq_eval(ast[:cond], value, env)[:val]
+  let cond_val = _ev(ast[:cond], value, env)
   | if (!cond_val):
       mq_eval(ast[:body], value, env)
     else:
@@ -780,7 +865,7 @@ def _eval_elifs(elifs, else_node, value, env):
   | let n = len(elifs)
   | while (i < n && is_none(result)):
       let e = elifs[i]
-      | if (mq_eval(e[:cond], value, env)[:val]):
+      | if (_ev(e[:cond], value, env)):
           result = mq_eval(e[:body], value, env)
       | i += 1
     end
@@ -794,7 +879,7 @@ end
 def _eval_while(ast, value, env):
   var cur_env = env
   | var cur_val = value
-  | var cond = mq_eval(ast[:cond], cur_val, cur_env)[:val]
+  | var cond = _ev(ast[:cond], cur_val, cur_env)
   | while (cond):
       let br = mq_eval(ast[:body], cur_val, cur_env)
       | let c = _ctrl(br)
@@ -804,11 +889,11 @@ def _eval_while(ast, value, env):
           | cond = false
         end
         elif (c == "continue") do
-          cond = mq_eval(ast[:cond], cur_val, cur_env)[:val]
+          cond = _ev(ast[:cond], cur_val, cur_env)
         end
         else do
           cur_val = br[:val]
-          | cond = mq_eval(ast[:cond], cur_val, cur_env)[:val]
+          | cond = _ev(ast[:cond], cur_val, cur_env)
         end
     end
   | {val: cur_val, env: cur_env}
@@ -820,7 +905,7 @@ end
 def _eval_until(ast, value, env):
   var cur_env = env
   | var cur_val = value
-  | var cond = !mq_eval(ast[:cond], cur_val, cur_env)[:val]
+  | var cond = !_ev(ast[:cond], cur_val, cur_env)
   | while (cond):
       let br = mq_eval(ast[:body], cur_val, cur_env)
       | let c = _ctrl(br)
@@ -830,11 +915,11 @@ def _eval_until(ast, value, env):
           | cond = false
         end
         elif (c == "continue") do
-          cond = !mq_eval(ast[:cond], cur_val, cur_env)[:val]
+          cond = !_ev(ast[:cond], cur_val, cur_env)
         end
         else do
           cur_val = br[:val]
-          | cond = !mq_eval(ast[:cond], cur_val, cur_env)[:val]
+          | cond = !_ev(ast[:cond], cur_val, cur_env)
         end
     end
   | {val: cur_val, env: cur_env}
@@ -849,10 +934,27 @@ end
 ## inside the host foreach genuinely stops iterating (not just a cheap
 ## per-item skip), so it also short-circuits the interpreted loop for free.
 def _eval_foreach(ast, value, env):
-  let iter_val = mq_eval(ast[:iter], value, env)[:val]
+  let iter_val = _ev(ast[:iter], value, env)
   | let iter_var = ast[:iter_var]
   | let body = ast[:body]
-  | var cur_env = env
+  | if (_KEEPS_ENV[body[:kind]]): _eval_foreach_values(iter_var, iter_val, body, env)
+    else: _eval_foreach_env(iter_var, iter_val, body, env)
+end
+
+## A body that keeps its env can't bind anything or signal break/continue, so
+## each item's result is collected directly. The loop variable stays bound to
+## the last item afterwards, as in _eval_foreach_env.
+def _eval_foreach_values(iter_var, iter_val, body, env):
+  var cur_env = env
+  | let results = foreach (item, iter_val):
+      cur_env = set(env, iter_var, item)
+      | _ev(body, item, cur_env)
+    end
+  | {val: results, env: cur_env}
+end
+
+def _eval_foreach_env(iter_var, iter_val, body, env):
+  var cur_env = env
   | var broke = false
   | var brk_val = None
   | let results = foreach (item, iter_val):
@@ -878,5 +980,5 @@ end
 
 ## Top-level eval: returns just the value (not the {val,env} pair).
 def mq_eval_v(ast, value, env):
-  mq_eval(ast, value, env)[:val]
+  _ev(ast, value, env)
 end
