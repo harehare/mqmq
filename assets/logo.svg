@@ -1,14 +1,30 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 130 100">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
   <defs>
-    <linearGradient id="flowGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+    <linearGradient id="flowGradientOuter" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" style="stop-color:#2B5773" />
       <stop offset="100%" style="stop-color:#61AFEF" />
     </linearGradient>
+    <linearGradient id="flowGradientInner" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#1B3A4E" />
+      <stop offset="100%" style="stop-color:#2B5773" />
+    </linearGradient>
   </defs>
-  <line x1="14" y1="30" x2="14" y2="70" stroke="url(#flowGradient)" stroke-width="8" stroke-linecap="round" />
-  <line x1="65" y1="30" x2="65" y2="70" stroke="url(#flowGradient)" stroke-width="8" stroke-linecap="round" />
-  <line x1="116" y1="30" x2="116" y2="70" stroke="url(#flowGradient)" stroke-width="8" stroke-linecap="round" />
-  <line x1="14" y1="50" x2="116" y2="50" stroke="url(#flowGradient)" stroke-width="4" stroke-linecap="round" />
-  <path d="M21.5 60 L21.5 40 L29.5 40 L39.5 53.4 L49.5 40 L57.5 40 L57.5 60" fill="none" stroke="url(#flowGradient)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" />
-  <path d="M72.5 60 L72.5 40 L80.5 40 L90.5 53.4 L100.5 40 L108.5 40 L108.5 60" fill="none" stroke="#8A97A0" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" opacity="0.75" />
+
+  <!-- mq's own pipe+M mark, at full size: mqmq is an mq interpreter -->
+  <g transform="matrix(-1 0 0 -1 100 100)">
+    <line x1="20" y1="25" x2="20" y2="75" stroke="url(#flowGradientOuter)" stroke-width="8" stroke-linecap="round" />
+    <line x1="50" y1="25" x2="50" y2="75" stroke="url(#flowGradientOuter)" stroke-width="8" stroke-linecap="round" />
+    <line x1="80" y1="25" x2="80" y2="75" stroke="url(#flowGradientOuter)" stroke-width="8" stroke-linecap="round" />
+    <line x1="20" y1="50" x2="80" y2="50" stroke="url(#flowGradientOuter)" stroke-width="4" stroke-linecap="round" />
+    <path d="M30 35 L30 65 L40 65 L50 45 L60 65 L70 65 L70 35" fill="none" stroke="url(#flowGradientOuter)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+
+  <!-- the same mark nested inside itself, smaller: mqmq implements mq in mq -->
+  <g transform="translate(44 44) scale(0.3) matrix(-1 0 0 -1 100 100)">
+    <line x1="20" y1="25" x2="20" y2="75" stroke="url(#flowGradientInner)" stroke-width="8" stroke-linecap="round" />
+    <line x1="50" y1="25" x2="50" y2="75" stroke="url(#flowGradientInner)" stroke-width="8" stroke-linecap="round" />
+    <line x1="80" y1="25" x2="80" y2="75" stroke="url(#flowGradientInner)" stroke-width="8" stroke-linecap="round" />
+    <line x1="20" y1="50" x2="80" y2="50" stroke="url(#flowGradientInner)" stroke-width="4" stroke-linecap="round" />
+    <path d="M30 35 L30 65 L40 65 L50 45 L60 65 L70 65 L70 35" fill="none" stroke="url(#flowGradientInner)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
 </svg>

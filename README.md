@@ -1,3 +1,4 @@
+<p align="center"><img src="assets/logo.svg" width="120" height="120" alt="mqmq logo" /></p>
 <h1 align="center">mqmq</h1>
 
 <p align="center">A self-hosted <a href="https://github.com/harehare/mq">mq</a> interpreter: mq's own query language, implemented in mq.</p>
