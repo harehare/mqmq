@@ -130,14 +130,32 @@ end
 ## Left-fold arr with fn(acc, item), starting from init. (No native `reduce`
 ## builtin exists in real mq, so this is done by hand with a while loop.)
 def _reduce(arr, init, fn_val, env):
-  var acc = init
-  | var i = 0
-  | let n = len(arr)
-  | while (i < n):
-      acc = _apply2(fn_val, acc, arr[i], env)
-      | i += 1
-    end
-  | acc
+  if (is_dict(fn_val) && fn_val[:kind] == "fn" && !is_empty(arr)) do
+    let params = fn_val[:params]
+    | let p1 = if (len(params) > 0): params[0][:name] else: "_"
+    | let p2 = if (len(params) > 1): params[1][:name] else: "_"
+    | let closure_env = fn_val[:env]
+    | let body = fn_val[:body]
+    | var acc = init
+    | var i = 0
+    | let n = len(arr)
+    | while (i < n):
+        let item = arr[i]
+        | acc = mq_eval(body, acc, set(set(closure_env, p1, acc), p2, item))[:val]
+        | i += 1
+      end
+    | acc
+  end
+  else do
+    var acc = init
+    | var i = 0
+    | let n = len(arr)
+    | while (i < n):
+        acc = _apply2(fn_val, acc, arr[i], env)
+        | i += 1
+      end
+    | acc
+  end
 end
 
 ## Apply a two-arg fn closure.
@@ -304,10 +322,26 @@ def _eval_builtin(name, args_vals, value, env):
     end
 
     # Higher-order collection functions (a1 must be a fn closure)
-    elif (name == "map"):
-      map(a0, fn(item): _apply1(a1, item, env) end)
-    elif (name == "filter"):
-      filter(a0, fn(item): _apply1(a1, item, env) end)
+    elif (name == "map") do
+      if (is_dict(a1) && a1[:kind] == "fn" && !is_empty(a0)) do
+        let p = if (is_empty(a1[:params])): "_" else: a1[:params][0][:name]
+        | let closure_env = a1[:env]
+        | let body = a1[:body]
+        | map(a0, fn(item): mq_eval(body, item, set(closure_env, p, item))[:val] end)
+      end
+      else:
+        map(a0, fn(item): _apply1(a1, item, env) end)
+    end
+    elif (name == "filter") do
+      if (is_dict(a1) && a1[:kind] == "fn" && !is_empty(a0)) do
+        let p = if (is_empty(a1[:params])): "_" else: a1[:params][0][:name]
+        | let closure_env = a1[:env]
+        | let body = a1[:body]
+        | filter(a0, fn(item): mq_eval(body, item, set(closure_env, p, item))[:val] end)
+      end
+      else:
+        filter(a0, fn(item): _apply1(a1, item, env) end)
+    end
     elif (name == "flat_map"):
       flat_map(a0, fn(item): _apply1(a1, item, env) end)
     elif (name == "sort_by"):
