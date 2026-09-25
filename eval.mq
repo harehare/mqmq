@@ -745,9 +745,17 @@ def mq_eval(ast, value, env):
     end
 
     elif (k == "module") do
-      let inner = mq_eval(ast[:body], value, env)
+      # set() preserves key order and updates an existing key in place, only
+      # ever appending a genuinely new one at the end (verified against the
+      # host runtime). So the module body's new bindings are exactly the
+      # tail of its resulting env past the outer env's original key count --
+      # no need to check `has(env, nk)` per key of the inner env, which costs
+      # O(env size) per lookup on this host's dict and made evaluating a
+      # module quadratic in the size of an already-large environment.
+      let orig_len = len(keys(env))
+      | let inner = mq_eval(ast[:body], value, env)
       | let after_keys = keys(inner[:env])
-      | let new_keys = filter(after_keys, fn(nk): !has(env, nk) end)
+      | let new_keys = after_keys[orig_len:len(after_keys)]
       | var new_env = env
       | var i = 0
       | while (i < len(new_keys)):
