@@ -589,6 +589,29 @@ def _parse_postfix_ops(toks, base_node, pos):
   | {node: node, pos: cur}
 end
 
+# Find the token that closes the bracket already opened before `pos`, by
+# tracking nested "(", "[", "{" opens so a closer belonging to a nested
+# list/call/dict is skipped rather than mistaken for ours. Bounds the range()
+# below to this list's own token span instead of `range(cur, len(toks) - 1)`
+# (the rest of the whole file), which otherwise makes parsing every list/call
+# after the first one quadratic in file size when a query has several of
+# them: each one's range used to reach all the way to eof.
+def _find_closer(toks, pos):
+  var depth = 0
+  | var cur = pos
+  | while (!_at_eof(toks, cur)):
+      let tok = toks[cur]
+      | if (tok[:t] == "op" && (tok[:v] == "(" || tok[:v] == "[" || tok[:v] == "{")):
+          depth += 1
+        elif (tok[:t] == "op" && (tok[:v] == ")" || tok[:v] == "]" || tok[:v] == "}")) do
+          if (depth == 0): break
+          | depth -= 1
+        end
+      | cur += 1
+    end
+  | cur
+end
+
 # Collect list elements through the host foreach accumulator. Advancing cur
 # past an expression lets later positions skip tokens consumed by that item.
 # This avoids copying the growing result array for every element. The empty
@@ -603,7 +626,7 @@ def _parse_call_args(toks, pos):
     | if (_at_v(toks, cur, ")")):
         {args: [first_arg[:node]], pos: cur + 1}
       else do
-        let rest = foreach (i, range(cur, len(toks) - 1)):
+        let rest = foreach (i, range(cur, _find_closer(toks, cur))):
           if (i < cur): continue
           elif (_at_v(toks, cur, ")") || _at_eof(toks, cur)): break
           else do
@@ -688,7 +711,7 @@ def _parse_array(toks, pos):
       | if (_at_v(toks, cur, "]")):
           {node: {kind: "arr", items: [first_item[:node]]}, pos: cur + 1}
         else do
-          let rest = foreach (i, range(cur, len(toks) - 1)):
+          let rest = foreach (i, range(cur, _find_closer(toks, cur))):
             if (i < cur): continue
             elif (_at_v(toks, cur, "]") || _at_eof(toks, cur)): break
             else do
@@ -714,7 +737,7 @@ def _parse_dict(toks, pos):
       | if (_at_v(toks, cur, "}")):
           {node: {kind: "dict", pairs: [first_pair]}, pos: cur + 1}
         else do
-          let rest = foreach (i, range(cur, len(toks) - 1)):
+          let rest = foreach (i, range(cur, _find_closer(toks, cur))):
             if (i < cur): continue
             elif (_at_v(toks, cur, "}") || _at_eof(toks, cur)): break
             else do

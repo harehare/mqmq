@@ -201,6 +201,22 @@ def _lex_interp_string_complex(chars, i, n):
   | {segs: segs, j: j + 1}
 end
 
+## Find the index of the unescaped closing delimiter for a string literal
+## whose body scan hit a backslash at `pos` (so `chars[pos]` is always "\\").
+## Skips escape pairs the same way the foreach body below consumes them, so
+## it lands on the same position that scan would reach on its own -- without
+## allocating `range(pos, n - 1)` (the rest of the whole query) for every
+## escaped string literal, which would make lexing a query with several of
+## them quadratic in query length.
+def _find_string_close(chars, pos, n, delim):
+  var k = pos
+  | while (k < n && chars[k] != delim):
+      if (chars[k] == "\\" && k + 1 < n): k += 2
+      else: k += 1
+    end
+  | k
+end
+
 ## Scan one token, returning the token and the next unread character index.
 ## Whitespace and comments return no token.
 def _lex_one(chars, i, n):
@@ -262,7 +278,7 @@ def _lex_one(chars, i, n):
           {tok: _tok("str", _slice(chars, i + 1, j)), next: j + 1}
         else do
           let prefix = _slice(chars, i + 1, j)
-          | let suffix = foreach (pos, range(j, n - 1)):
+          | let suffix = foreach (pos, range(j, _find_string_close(chars, j, n, delim))):
               if (pos < j): continue
               elif (chars[pos] == delim): break
               elif (chars[pos] == "\\" && pos + 1 < n) do
