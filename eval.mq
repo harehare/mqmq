@@ -707,19 +707,20 @@ def _eval_bin_node(ast, value, env):
 end
 
 ## Evaluate a left-associated binary chain without recursively evaluating
-## each intermediate bin node. Right operands still see earlier bindings.
+## each intermediate bin node. Each stack link is a two-item array; right
+## operands still see earlier bindings.
 def _eval_bin_chain(ast, value, env):
   var stages = None
   | var cursor = ast
   | while (cursor[:kind] == "bin"):
-      stages = {node: cursor, next: stages}
+      stages = [cursor, stages]
       | cursor = cursor[:left]
     end
   | let first = _eval_keep_env(cursor, value, env)
   | var acc = first[:val]
   | var cur_env = first[:env]
   | while (!is_none(stages)):
-      let stage = stages[:node]
+      let stage = stages[0]
       | let op = stage[:op]
       # A short-circuit leaves acc and cur_env unchanged.
       | if (op == "&&" && !acc): acc = false
@@ -735,7 +736,7 @@ def _eval_bin_chain(ast, value, env):
               | cur_env = rr[:env]
             end
         end
-      | stages = stages[:next]
+      | stages = stages[1]
     end
   | {val: acc, env: cur_env}
 end
@@ -769,8 +770,9 @@ def mq_eval(ast, value, env):
       else do
         var stages = None
         | var cursor = ast
+        # Two-item array links are cheaper than tiny dictionaries here.
         | while (cursor[:kind] == "pipe"):
-            stages = {node: cursor[:right], next: stages}
+            stages = [cursor[:right], stages]
             | cursor = cursor[:left]
           end
         | let first = mq_eval(cursor, value, env)
@@ -778,7 +780,7 @@ def mq_eval(ast, value, env):
         | var result_env = first[:env]
         | var signal = _ctrl(first)
         | while (!is_none(stages) && signal == "none"):
-            let stage = stages[:node]
+            let stage = stages[0]
             | if (_KEEPS_ENV[stage[:kind]]):
                 result_val = _ev(stage, result_val, result_env)
               else do
@@ -787,7 +789,7 @@ def mq_eval(ast, value, env):
                 | result_env = result[:env]
                 | signal = _ctrl(result)
               end
-            | stages = stages[:next]
+            | stages = stages[1]
           end
         | if (signal == "none"): {val: result_val, env: result_env}
           else: {val: result_val, env: result_env, ctrl: signal}
