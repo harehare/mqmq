@@ -214,7 +214,8 @@ A few characteristics of the host `mq` runtime matter a lot for code written, li
 - **Evaluate common short binary operations directly** when the left operand keeps its environment. This removes an extra function call and operator dispatch for `+`, `-`, and `<`, including those inside recursive arithmetic.
 - **Bound a `foreach`-driving `range()` to its own span, not to end-of-file.** `range()` eagerly allocates, so sizing it as `range(cur, len(toks) - 1)` made parsing/lexing quadratic when a file had several lists/calls/dicts/escaped strings. `_find_closer` (parser.mq) and `_find_string_close` (lexer.mq) prescan for the real closing token instead.
 - **Read a standalone numeric right operand directly** in long binary expressions. Higher-precedence operators and postfix syntax still use the normal parser.
-- **Collect interpolated-string text in spans.** The lexer slices text between escapes and `${...}` expressions, then joins each segment once. Segments with many escapes switch to linked pieces so each append avoids copying a growing array.
+- **Collect interpolated-string text in spans.** The lexer slices text between escapes and `${...}` expressions, then joins each segment once. For many escapes or interpolation expressions, it stores later pieces as links to avoid repeated array copies.
+- **Decode escapes directly in each lexer path.** An escape with a following character always consumes two graphemes, and only `\\n` and `\\t` change that character. Skipping a per-escape result dictionary reduces work in escaped strings.
 
 ## Running the Tests
 

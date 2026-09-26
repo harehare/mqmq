@@ -73,6 +73,15 @@ def test_long_plain_and_escaped_strings():
   | assert_eq(_lex("\"a\\nb\"")[0], _tok("str", "a\nb"))
 end
 
+def test_escape_decoding_across_lexer_paths():
+  let body = "a\\nb\\tc\\q\\\\d\\\"e"
+  | let decoded = "a\nb\tcq\\d\"e"
+  | let source = "\"" + body + "\""
+  | assert_eq(_lex(source)[0], _tok("str", decoded))
+  | assert_eq(lexer::_lex_chars(source)[0], _tok("str", decoded))
+  | assert_eq(_lex("s\"" + body + "\"")[0][:v], [{kind: "text", val: decoded}])
+end
+
 def test_unicode_graphemes():
   assert_eq(_lex("\"👩‍💻\" ☃ x"), [_tok("str", "👩‍💻"), _tok("op", "☃"), _tok("ident", "x")])
 end
@@ -96,6 +105,26 @@ def test_interp_multiple_expressions():
       {kind: "text", val: "def"}, {kind: "expr", val: "2"},
       {kind: "text", val: "ghi"},
     ])
+end
+
+# @parametrize([[7], [8], [9], [128]])
+def test_interp_expression_segment_collection(count):
+  let source = "s\"" + join(map(range(0, count - 1), fn(i): "a${1}" end), "") + "z\""
+  | let segs = _lex(source)[0][:v]
+  | let indexes = range(0, count - 1)
+  | assert_eq(len(segs), count * 2 + 1)
+  | assert_eq(map(indexes, fn(i): segs[i * 2] end),
+              map(indexes, fn(i): {kind: "text", val: "a"} end))
+  | assert_eq(map(indexes, fn(i): segs[i * 2 + 1] end),
+              map(indexes, fn(i): {kind: "expr", val: "1"} end))
+  | assert_eq(segs[count * 2], {kind: "text", val: "z"})
+end
+
+# @parametrize([[15], [16], [17], [65]])
+def test_interp_adjacent_expression_segment_collection(count):
+  let source = "s\"" + join(map(range(0, count - 1), fn(i): "${1}" end), "") + "\""
+  | assert_eq(_lex(source)[0][:v],
+              map(range(0, count - 1), fn(i): {kind: "expr", val: "1"} end))
 end
 
 def test_interp_escape_after_expression():

@@ -100,19 +100,6 @@ def _scan_comment(chars, start, n):
   | j
 end
 
-# Lex an escape sequence starting at position j (after the backslash).
-def _lex_escape(chars, j, n):
-  if (j >= n):
-    {ch: "\\", j: j}
-  else:
-    let nc = chars[j]
-    | if (nc == "n"):  {ch: "\n", j: j + 1}
-      elif (nc == "t"):  {ch: "\t", j: j + 1}
-      elif (nc == "\\"): {ch: "\\", j: j + 1}
-      elif (nc == "\"" || nc == "'"): {ch: nc, j: j + 1}
-      else: {ch: nc, j: j + 1}
-end
-
 # Scan a `${...}` expression body starting just past the opening brace.
 # Braces inside strings and comments are data, not expression delimiters.
 def _scan_until_brace(chars, start, n):
@@ -184,6 +171,18 @@ def _join_interp_tail(parts, tail, tail_len):
   | join(parts + reverse(reversed), "")
 end
 
+# Flatten segments collected after the first 16 without copying the growing
+# `segs` array for every additional `${...}` expression.
+def _finish_interp_segments(segs, tail, tail_len):
+  var cur = tail
+  | let reversed = foreach (i, range(0, tail_len - 1)):
+      let segment = cur[0]
+      | cur = cur[1]
+      | segment
+    end
+  | segs + reverse(reversed)
+end
+
 # Accumulate text between escapes and interpolations as slices, then join each
 # text segment once. After enough pieces, use linked storage so appending an
 # escape no longer copies the growing array. The initial scan has already
@@ -192,6 +191,8 @@ def _lex_interp_string_chunks(chars, i, n, first_special):
   var j = first_special
   | var start = i + 1
   | var segs = []
+  | var seg_tail = None
+  | var seg_tail_len = 0
   | var parts = []
   | var tail = None
   | var tail_len = 0
@@ -206,16 +207,19 @@ def _lex_interp_string_chunks(chars, i, n, first_special):
             end
             else: parts += [span]
         end
-        | let esc = _lex_escape(chars, j + 1, n)
+        | let escaped = chars[j + 1]
+        | let decoded = if (escaped == "n"): "\n"
+                        elif (escaped == "t"): "\t"
+                        else: escaped
         | if (linked) do
-            tail = [esc[:ch], tail]
+            tail = [decoded, tail]
             | tail_len += 1
           end
           else do
-            parts += [esc[:ch]]
+            parts += [decoded]
             | if (len(parts) >= 64): linked = true
           end
-        | j = esc[:j]
+        | j += 2
         | start = j
       end
       elif (chars[j] == "$" && j + 1 < n && chars[j + 1] == "{") do
@@ -228,15 +232,25 @@ def _lex_interp_string_chunks(chars, i, n, first_special):
             else: parts += [span]
         end
         | if (!is_empty(parts) || tail_len > 0) do
-            segs += [{kind: "text", val: if (tail_len == 0): join(parts, "")
-                                            else: _join_interp_tail(parts, tail, tail_len)}]
+            let segment = {kind: "text", val: if (tail_len == 0): join(parts, "")
+                                               else: _join_interp_tail(parts, tail, tail_len)}
+            | if (len(segs) >= 16) do
+                seg_tail = [segment, seg_tail]
+                | seg_tail_len += 1
+              end
+              else: segs += [segment]
             | parts = []
             | tail = None
             | tail_len = 0
             | linked = false
           end
         | let k = _scan_until_brace(chars, j + 2, n)
-        | segs += [{kind: "expr", val: _slice(chars, j + 2, k)}]
+        | let segment = {kind: "expr", val: _slice(chars, j + 2, k)}
+        | if (len(segs) >= 16) do
+            seg_tail = [segment, seg_tail]
+            | seg_tail_len += 1
+          end
+          else: segs += [segment]
         | j = k + 1
         | start = j
       end
@@ -250,10 +264,17 @@ def _lex_interp_string_chunks(chars, i, n, first_special):
         end
         else: parts += [span]
     end
-  | if (!is_empty(parts) || tail_len > 0):
-      segs += [{kind: "text", val: if (tail_len == 0): join(parts, "")
-                                      else: _join_interp_tail(parts, tail, tail_len)}]
-  | {segs: segs, j: j + 1}
+  | if (!is_empty(parts) || tail_len > 0) do
+      let segment = {kind: "text", val: if (tail_len == 0): join(parts, "")
+                                         else: _join_interp_tail(parts, tail, tail_len)}
+      | if (len(segs) >= 16) do
+          seg_tail = [segment, seg_tail]
+          | seg_tail_len += 1
+        end
+        else: segs += [segment]
+    end
+  | {segs: if (seg_tail_len == 0): segs
+           else: _finish_interp_segments(segs, seg_tail, seg_tail_len), j: j + 1}
 end
 
 ## Find the index of the unescaped closing delimiter for a string literal
@@ -337,9 +358,11 @@ def _lex_one(chars, i, n):
               if (pos < j): continue
               elif (chars[pos] == delim): break
               elif (chars[pos] == "\\" && pos + 1 < n) do
-                let esc = _lex_escape(chars, pos + 1, n)
-                | j = esc[:j]
-                | esc[:ch]
+                let escaped = chars[pos + 1]
+                | j = pos + 2
+                | if (escaped == "n"): "\n"
+                  elif (escaped == "t"): "\t"
+                  else: escaped
               end
               else do
                 j = pos + 1
@@ -425,9 +448,11 @@ def _unescape(s):
   | join(foreach (pos, range(0, n - 1)):
       if (pos < next): continue
       elif (chars[pos] == "\\" && pos + 1 < n) do
-        let esc = _lex_escape(chars, pos + 1, n)
-        | next = esc[:j]
-        | esc[:ch]
+        let escaped = chars[pos + 1]
+        | next = pos + 2
+        | if (escaped == "n"): "\n"
+          elif (escaped == "t"): "\t"
+          else: escaped
       end
       else: chars[pos]
     end, "")

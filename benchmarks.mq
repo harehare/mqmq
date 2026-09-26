@@ -18,6 +18,11 @@ import "lexer"
 | let _long_interp_32_escapes_source = "s\"" + join(map(range(0, 31), fn(i): _interp_escape_chunk end), "") + "\""
 | let _long_interp_33_escapes_source = "s\"" + join(map(range(0, 32), fn(i): _interp_escape_chunk end), "") + "\""
 | let _long_interp_many_escapes_source = "s\"" + join(map(range(0, 255), fn(i): "a\\nbcdef" end), "") + "\""
+| let _interp_expr_chunk = "a${1}"
+| let _interp_two_expr_source = "s\"" + join(map(range(0, 1), fn(i): _interp_expr_chunk end), "") + "z\""
+| let _interp_33_expr_source = "s\"" + join(map(range(0, 32), fn(i): _interp_expr_chunk end), "") + "z\""
+| let _interp_128_expr_source = "s\"" + join(map(range(0, 127), fn(i): _interp_expr_chunk end), "") + "z\""
+| let _interp_512_expr_source = "s\"" + join(map(range(0, 511), fn(i): _interp_expr_chunk end), "") + "z\""
 | let _tokens = lexer::lex(_query)
 | let _ast = parser::mq_parse(_tokens)
 | let _long_ast = parser::mq_parse(lexer::lex(_long_query))
@@ -46,6 +51,10 @@ end
 
 def bench_lex_long_escaped_string():
   lexer::lex(_long_escaped_source)
+end
+
+def bench_lex_long_escaped_string_scanner():
+  lexer::_lex_chars(_long_escaped_source)
 end
 
 def bench_lex_long_interpolated_string():
@@ -85,6 +94,30 @@ end
 def bench_lex_long_interpolated_many_escapes_repeated():
   foreach (i, range(0, 19)):
     lexer::lex(_long_interp_many_escapes_source)
+  end
+end
+
+def bench_lex_interpolated_two_expressions_repeated():
+  foreach (i, range(0, 19)):
+    lexer::lex(_interp_two_expr_source)
+  end
+end
+
+def bench_lex_interpolated_33_expressions_repeated():
+  foreach (i, range(0, 19)):
+    lexer::lex(_interp_33_expr_source)
+  end
+end
+
+def bench_lex_interpolated_128_expressions_repeated():
+  foreach (i, range(0, 19)):
+    lexer::lex(_interp_128_expr_source)
+  end
+end
+
+def bench_lex_interpolated_512_expressions_repeated():
+  foreach (i, range(0, 19)):
+    lexer::lex(_interp_512_expr_source)
   end
 end
 
