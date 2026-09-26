@@ -12,6 +12,11 @@ import "lexer"
 | let _long_interp_source = "s\"" + join(map(range(0, 255), fn(i): "abcdefgh" end), "") + "\""
 | let _long_interp_expr_source = "s\"" + join(map(range(0, 255), fn(i): "abcdefgh" end), "") + "${1}\""
 | let _long_interp_expr_escape_source = "s\"${1}" + join(map(range(0, 255), fn(i): "abcdefgh" end), "") + "\\n\""
+| let _long_interp_two_escapes_source = "s\"" + join(map(range(0, 127), fn(i): "abcdefgh" end), "") +
+    "\\n" + join(map(range(0, 127), fn(i): "abcdefgh" end), "") + "\\t\""
+| let _interp_escape_chunk = join(map(range(0, 15), fn(i): "abcdefgh" end), "") + "\\n"
+| let _long_interp_32_escapes_source = "s\"" + join(map(range(0, 31), fn(i): _interp_escape_chunk end), "") + "\""
+| let _long_interp_33_escapes_source = "s\"" + join(map(range(0, 32), fn(i): _interp_escape_chunk end), "") + "\""
 | let _long_interp_many_escapes_source = "s\"" + join(map(range(0, 255), fn(i): "a\\nbcdef" end), "") + "\""
 | let _tokens = lexer::lex(_query)
 | let _ast = parser::mq_parse(_tokens)
@@ -56,6 +61,24 @@ end
 def bench_lex_long_interpolated_expression_escape_repeated():
   foreach (i, range(0, 19)):
     lexer::lex(_long_interp_expr_escape_source)
+  end
+end
+
+def bench_lex_long_interpolated_two_escapes_repeated():
+  foreach (i, range(0, 19)):
+    lexer::lex(_long_interp_two_escapes_source)
+  end
+end
+
+def bench_lex_long_interpolated_32_escapes_repeated():
+  foreach (i, range(0, 19)):
+    lexer::lex(_long_interp_32_escapes_source)
+  end
+end
+
+def bench_lex_long_interpolated_33_escapes_repeated():
+  foreach (i, range(0, 19)):
+    lexer::lex(_long_interp_33_escapes_source)
   end
 end
 

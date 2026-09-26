@@ -115,6 +115,26 @@ def test_interp_escape_before_expression():
     ])
 end
 
+def test_interp_many_escapes_across_expression():
+  let escaped = join(map(range(0, 39), fn(i): "x\\n" end), "")
+  | let decoded = join(map(range(0, 39), fn(i): "x\n" end), "")
+  | let source = "s\"" + escaped + "${1}a\\${literal}b\\t\""
+  | assert_eq(_lex(source)[0][:v], [
+      {kind: "text", val: decoded}, {kind: "expr", val: "1"},
+      {kind: "text", val: "a${literal}b\t"},
+    ])
+end
+
+def test_interp_escape_collection_boundary():
+  let thirty_one = join(map(range(0, 30), fn(i): "x\\n" end), "")
+  | let thirty_one_text = join(map(range(0, 30), fn(i): "x\n" end), "")
+  | let thirty_two = thirty_one + "x\\n"
+  | let thirty_two_text = thirty_one_text + "x\n"
+  | assert_eq(_lex("s\"" + thirty_one + "\"")[0][:v], [{kind: "text", val: thirty_one_text}])
+  | assert_eq(_lex("s\"" + thirty_two + "\"")[0][:v], [{kind: "text", val: thirty_two_text}])
+  | assert_eq(_lex("s\"" + thirty_two + "x\\n\"")[0][:v], [{kind: "text", val: thirty_two_text + "x\n"}])
+end
+
 def test_interp_string_no_expr():
   let toks = _lex("s\"plain\"")
   | assert_eq(toks[0][:v], [{kind: "text", val: "plain"}])

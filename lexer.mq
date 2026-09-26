@@ -172,26 +172,68 @@ def _lex_interp_string(chars, i, n):
       _lex_interp_string_chunks(chars, i, n, j)
 end
 
+# Join the tail of a text segment collected as two-item links. The short
+# prefix stays in `parts` so small strings take the direct array path.
+def _join_interp_tail(parts, tail, tail_len):
+  var cur = tail
+  | let reversed = foreach (i, range(0, tail_len - 1)):
+      let part = cur[0]
+      | cur = cur[1]
+      | part
+    end
+  | join(parts + reverse(reversed), "")
+end
+
 # Accumulate text between escapes and interpolations as slices, then join each
-# text segment once. The initial scan has already found `first_special`.
+# text segment once. After enough pieces, use linked storage so appending an
+# escape no longer copies the growing array. The initial scan has already
+# found `first_special`.
 def _lex_interp_string_chunks(chars, i, n, first_special):
   var j = first_special
   | var start = i + 1
   | var segs = []
   | var parts = []
+  | var tail = None
+  | var tail_len = 0
+  | var linked = false
   | while (j < n && chars[j] != "\""):
       if (chars[j] == "\\" && j + 1 < n) do
-        if (start < j): parts += [_slice(chars, start, j)]
+        if (start < j) do
+          let span = _slice(chars, start, j)
+          | if (linked) do
+              tail = [span, tail]
+              | tail_len += 1
+            end
+            else: parts += [span]
+        end
         | let esc = _lex_escape(chars, j + 1, n)
-        | parts += [esc[:ch]]
+        | if (linked) do
+            tail = [esc[:ch], tail]
+            | tail_len += 1
+          end
+          else do
+            parts += [esc[:ch]]
+            | if (len(parts) >= 64): linked = true
+          end
         | j = esc[:j]
         | start = j
       end
       elif (chars[j] == "$" && j + 1 < n && chars[j + 1] == "{") do
-        if (start < j): parts += [_slice(chars, start, j)]
-        | if (!is_empty(parts)) do
-            segs += [{kind: "text", val: join(parts, "")}]
+        if (start < j) do
+          let span = _slice(chars, start, j)
+          | if (linked) do
+              tail = [span, tail]
+              | tail_len += 1
+            end
+            else: parts += [span]
+        end
+        | if (!is_empty(parts) || tail_len > 0) do
+            segs += [{kind: "text", val: if (tail_len == 0): join(parts, "")
+                                            else: _join_interp_tail(parts, tail, tail_len)}]
             | parts = []
+            | tail = None
+            | tail_len = 0
+            | linked = false
           end
         | let k = _scan_until_brace(chars, j + 2, n)
         | segs += [{kind: "expr", val: _slice(chars, j + 2, k)}]
@@ -200,8 +242,17 @@ def _lex_interp_string_chunks(chars, i, n, first_special):
       end
       else: j += 1
     end
-  | if (start < j): parts += [_slice(chars, start, j)]
-  | if (!is_empty(parts)): segs += [{kind: "text", val: join(parts, "")}]
+  | if (start < j) do
+      let span = _slice(chars, start, j)
+      | if (linked) do
+          tail = [span, tail]
+          | tail_len += 1
+        end
+        else: parts += [span]
+    end
+  | if (!is_empty(parts) || tail_len > 0):
+      segs += [{kind: "text", val: if (tail_len == 0): join(parts, "")
+                                      else: _join_interp_tail(parts, tail, tail_len)}]
   | {segs: segs, j: j + 1}
 end
 
