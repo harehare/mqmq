@@ -1,0 +1,21 @@
+# Run with: mq-bench benchmarks_builtins.mq --iterations 10 --warmup 2
+# Repeated calls isolate the shared builtin argument dispatch.
+
+import "eval"
+| let values = range(0, 15)
+| let env = {values: values}
+| let len_ast = {kind: "call", name: "len", args: [{kind: "ident", name: "values"}]}
+| let pow_ast = {kind: "call", name: "pow", args: [{kind: "num", val: 2}, {kind: "num", val: 3}]}
+|
+
+def bench_builtin_len_repeated():
+  foreach (i, range(0, 9999)):
+    eval::mq_eval(len_ast, None, env)[:val]
+  end
+end
+
+def bench_builtin_pow_repeated():
+  foreach (i, range(0, 9999)):
+    eval::mq_eval(pow_ast, None, {})[:val]
+  end
+end

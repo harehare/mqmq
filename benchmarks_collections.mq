@@ -5,8 +5,15 @@ import "eval"
 | let items = range(0, 8191)
 | let foreach_ast = {kind: "foreach", iter_var: "item",
     iter: {kind: "dot"}, body: {kind: "ident", name: "item"}}
+| let double_ast = {kind: "foreach", iter_var: "item", iter: {kind: "dot"},
+    body: {kind: "bin", op: "*", left: {kind: "ident", name: "item"},
+      right: {kind: "num", val: 2}}}
 |
 
 def bench_foreach_8192():
   eval::mq_eval(foreach_ast, items, {})[:val]
+end
+
+def bench_foreach_double_8192():
+  eval::mq_eval(double_ast, items, {})[:val]
 end

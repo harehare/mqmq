@@ -169,13 +169,13 @@ end
 # ── let / var / assign ────────────────────────────────────────────────────────
 
 # Array pattern: [a, b] or [head, ..tail]. Small patterns use the direct
-# loop; after roughly 256 comma-separated names, foreach collects the tail
+# loop; after roughly 64 comma-separated names, foreach collects the tail
 # without copying the growing names array for each binding.
 def _parse_array_pattern(toks, pos):
   var names = []
   | var rest = None
   | var cur = pos + 1
-  | while (!_at_v(toks, cur, "]") && !_at_eof(toks, cur) && cur < pos + 512):
+  | while (!_at_v(toks, cur, "]") && !_at_eof(toks, cur) && cur < pos + 128):
       if (_at_op(toks, cur, "..")) do
           rest = _expect_t(toks, cur + 1, "ident")[:v]
           | cur = cur + 2
@@ -206,11 +206,12 @@ def _parse_array_pattern(toks, pos):
   | {node: {kind: "arraypat", names: names, rest: rest}, pos: _expect_v(toks, cur, "]")}
 end
 
-# Dict pattern (shorthand bind): {name, age}
+# Dict pattern (shorthand bind): {name, age}. Use the same collection
+# threshold as array patterns to avoid repeated copies for long patterns.
 def _parse_dict_pattern(toks, pos):
   var names = []
   | var cur = pos + 1
-  | while (!_at_v(toks, cur, "}") && !_at_eof(toks, cur) && cur < pos + 512):
+  | while (!_at_v(toks, cur, "}") && !_at_eof(toks, cur) && cur < pos + 128):
       names += [_expect_t(toks, cur, "ident")[:v]]
       | cur = _skip_v(toks, cur + 1, ",")
     end
@@ -540,15 +541,21 @@ def _parse_binary(toks, pos, min_prec):
       | while (prec >= min_prec):
           let rhs = toks[cur + 1]
           | let after_rhs = toks[cur + 2]
-          | let simple_number = rhs[:t] == "num" && after_rhs[:v] != "[" &&
-              !(after_rhs[:t] == "op" && after_rhs[:v] == "?") &&
-              _op_prec(after_rhs) < prec + 1
+          | let number_rhs = rhs[:t] == "num" && after_rhs[:v] != "[" &&
+              !(after_rhs[:t] == "op" && after_rhs[:v] == "?")
+          | let after_prec = if (number_rhs): _op_prec(after_rhs) else: 0
+          | let simple_number = number_rhs && after_prec < prec + 1
           | let rr = if (simple_number):
               {node: {kind: "num", val: to_number(rhs[:v])}, pos: cur + 2}
+            elif (rhs[:t] == "ident" && after_rhs[:v] != "::" &&
+                after_rhs[:v] != "(" && after_rhs[:v] != "[" &&
+                !(after_rhs[:t] == "op" && after_rhs[:v] == "?") &&
+                _op_prec(after_rhs) < prec + 1):
+              {node: {kind: "ident", name: rhs[:v]}, pos: cur + 2}
             else: _parse_binary(toks, cur + 1, prec + 1)
           | node = {kind: "bin", op: toks[cur][:v], left: node, right: rr[:node]}
           | cur = rr[:pos]
-          | prec = _op_prec(toks[cur])
+          | prec = if (simple_number): after_prec else: _op_prec(toks[cur])
         end
       | {node: node, pos: cur}
     end
@@ -701,7 +708,7 @@ def _parse_primary(toks, pos):
   | if (t == "num"):
       {node: {kind: "num",  val: to_number(tok[:v])}, pos: pos + 1}
     elif (t == "ident"):
-      if (_peekn(toks, pos, 1)[:v] == "::" && _peekn(toks, pos, 2)[:t] == "ident"):
+      if (toks[pos + 1][:v] == "::" && toks[pos + 2][:t] == "ident"):
         {node: {kind: "ident", name: tok[:v] + "::" + toks[pos + 2][:v]}, pos: pos + 3}
       else:
         {node: {kind: "ident", name: tok[:v]}, pos: pos + 1}

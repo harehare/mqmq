@@ -44,23 +44,24 @@ end
 def _bind_pattern(pat, val, env):
   if (pat[:kind] == "arraypat") do
       let names = pat[:names]
+      | let value_len = len(val)
       | if (len(names) >= 32) do
           let bindings = map(range(0, len(names) - 1), fn(i):
-            [names[i], if (i < len(val)): val[i] else: None]
+            [names[i], if (i < value_len): val[i] else: None]
           end)
           | let with_rest = if (is_none(pat[:rest])): bindings
-              else: bindings + [[pat[:rest], if (len(names) < len(val)): val[len(names):len(val)] else: []]]
+              else: bindings + [[pat[:rest], if (len(names) < value_len): val[len(names):value_len] else: []]]
           | dict(entries(env) + with_rest)
         end
         else do
           var e = env
           | var i = 0
           | while (i < len(names)):
-              e = _env_set(e, names[i], if (i < len(val)): val[i] else: None)
+              e = _env_set(e, names[i], if (i < value_len): val[i] else: None)
               | i += 1
             end
           | if (!is_none(pat[:rest])):
-              e = _env_set(e, pat[:rest], if (len(names) < len(val)): val[len(names):len(val)] else: [])
+              e = _env_set(e, pat[:rest], if (len(names) < value_len): val[len(names):value_len] else: [])
           | e
         end
     end
@@ -144,7 +145,13 @@ def _try_match_arms(arms, matchval, value, env):
       let arm = arms[i]
       | let pattern = arm[:pattern]
       | if (pattern[:kind] == "litpat") do
-          if (matchval == _ev(pattern[:val], matchval, env) &&
+          let literal = pattern[:val]
+          | let literal_kind = literal[:kind]
+          | let literal_value = if (literal_kind == "num" || literal_kind == "str" || literal_kind == "bool"):
+              literal[:val]
+            elif (literal_kind == "none"): None
+            else: _ev(literal, matchval, env)
+          | if (matchval == literal_value &&
               (is_none(arm[:guard]) || _ev(arm[:guard], value, env))):
             result = mq_eval(arm[:body], value, env)
         end
@@ -266,9 +273,10 @@ end
 ## args_vals is the list of already-evaluated argument values.
 def _eval_builtin(name, args_vals, value, env):
   # Helper: first arg or current value if no args
-  let a0 = if (len(args_vals) > 0): args_vals[0] else: value
-  | let a1 = if (len(args_vals) > 1): args_vals[1] else: None
-  | let a2 = if (len(args_vals) > 2): args_vals[2] else: None
+  let arg_count = len(args_vals)
+  | let a0 = if (arg_count > 0): args_vals[0] else: value
+  | let a1 = if (arg_count > 1): args_vals[1] else: None
+  | let a2 = if (arg_count > 2): args_vals[2] else: None
 
   # Type predicates
   | if (name == "is_empty"):    is_empty(a0)
@@ -314,7 +322,7 @@ def _eval_builtin(name, args_vals, value, env):
 
     # Collection construction / transformation
     elif (name == "range"):
-      if (len(args_vals) == 1): range(a0)
+      if (arg_count == 1): range(a0)
       else: range(a0, a1)
     elif (name == "flatten"):  flatten(a0)
     elif (name == "compact"):  compact(a0)
@@ -338,26 +346,26 @@ def _eval_builtin(name, args_vals, value, env):
     elif (name == "to_coroutine"): to_coroutine(a0)
     elif (name == "collect"):      collect(a0)
     elif (name == "stream_range"):
-      if (len(args_vals) == 2): stream_range(a0, a1)
+      if (arg_count == 2): stream_range(a0, a1)
       else: stream_range(a0, a1, a2)
     elif (name == "next"):      next(a0)
     elif (name == "close"):     close(a0)
     elif (name == "iterables"): iterables(a0)
     # 2-arity: `x | take(n)` (self as 1st arg) and `take(x, n)` (both explicit) both work.
     elif (name == "send"):
-      if (len(args_vals) == 2): send(a0, a1) else: send(value, a0)
+      if (arg_count == 2): send(a0, a1) else: send(value, a0)
     elif (name == "take"):
-      if (len(args_vals) == 2): take(a0, a1) else: take(value, a0)
+      if (arg_count == 2): take(a0, a1) else: take(value, a0)
     elif (name == "skip"):
-      if (len(args_vals) == 2): skip(a0, a1) else: skip(value, a0)
+      if (arg_count == 2): skip(a0, a1) else: skip(value, a0)
     elif (name == "take_while") do
-      let arr = if (len(args_vals) == 2): a0 else: value
-      | let f = if (len(args_vals) == 2): a1 else: a0
+      let arr = if (arg_count == 2): a0 else: value
+      | let f = if (arg_count == 2): a1 else: a0
       | take_while(arr, fn(item): _apply1(f, item, env) end)
     end
     elif (name == "skip_while") do
-      let arr = if (len(args_vals) == 2): a0 else: value
-      | let f = if (len(args_vals) == 2): a1 else: a0
+      let arr = if (arg_count == 2): a0 else: value
+      | let f = if (arg_count == 2): a1 else: a0
       | skip_while(arr, fn(item): _apply1(f, item, env) end)
     end
 
@@ -425,10 +433,10 @@ def _eval_builtin(name, args_vals, value, env):
     elif (name == "ceil"):  ceil(a0)
     elif (name == "round"): round(a0)
     elif (name == "min"):
-      if (len(args_vals) == 1): first(sort(a0))
+      if (arg_count == 1): first(sort(a0))
       else: min(a0, a1)
     elif (name == "max"):
-      if (len(args_vals) == 1): last(sort(a0))
+      if (arg_count == 1): last(sort(a0))
       else: max(a0, a1)
     elif (name == "pow"):   pow(a0, a1)
     elif (name == "sqrt"):  sqrt(a0)
@@ -492,7 +500,8 @@ end
 def _call_user_fn(fn_val, args_vals, value, env):
   let params = fn_val[:params]
   | let count = len(params)
-  | if (count >= 8 && len(args_vals) >= count) do
+  | let arg_count = len(args_vals)
+  | if (count >= 8 && arg_count >= count) do
       # All parameters are supplied, so defaults cannot inspect earlier
       # bindings. Build the call environment once instead of copying it for
       # every parameter.
@@ -509,7 +518,7 @@ def _call_user_fn(fn_val, args_vals, value, env):
       | var i = 0
       | while (i < count):
           let p = params[i]
-          | let arg_val = if (i < len(args_vals)): args_vals[i]
+          | let arg_val = if (i < arg_count): args_vals[i]
                           elif (!is_none(p[:default])): _ev(p[:default], value, call_env)
                           else: None
           | call_env = set(call_env, p[:name], arg_val)
@@ -606,6 +615,13 @@ def _ev(ast, value, env):
         else: v
     end
     elif (k == "dkey"): _ev(ast[:base], value, env)[ast[:key]]
+    # Collection literals do not export bindings from their elements. Return
+    # their values directly when a parent expression does not need an env.
+    elif (k == "arr"): map(ast[:items], fn(item): _ev(item, value, env) end)
+    elif (k == "dict"):
+      dict(map(ast[:pairs], fn(pair):
+        [_ev(pair[:key], value, env), _ev(pair[:val], value, env)]
+      end))
     else: mq_eval(ast, value, env)[:val]
 end
 
@@ -665,18 +681,22 @@ def _ev_if(ast, value, env):
   if (_ev(ast[:cond], value, env)): _ev(ast[:then], value, env)
   else do
     let elifs = ast[:elifs]
-    | let n = len(elifs)
-    | var i = 0
-    | var branch = ast[:else_br]
-    | while (i < n):
-        let e = elifs[i]
-        | if (_ev(e[:cond], value, env)) do
-            branch = e[:body]
-            | i = n
+    | if (is_empty(elifs)):
+        if (is_none(ast[:else_br])): None else: _ev(ast[:else_br], value, env)
+      else do
+        let n = len(elifs)
+        | var i = 0
+        | var branch = ast[:else_br]
+        | while (i < n):
+            let e = elifs[i]
+            | if (_ev(e[:cond], value, env)) do
+                branch = e[:body]
+                | i = n
+              end
+              else: i += 1
           end
-          else: i += 1
+        | if (is_none(branch)): None else: _ev(branch, value, env)
       end
-    | if (is_none(branch)): None else: _ev(branch, value, env)
   end
 end
 
@@ -728,8 +748,14 @@ def _eval_bin_chain(ast, value, env):
         elif (op == "??" && !is_none(acc)): None
         else do
           let right = stage[:right]
-          | if (_KEEPS_ENV[right[:kind]]):
-              acc = _eval_bin(op, acc, _ev(right, value, cur_env))
+          | let right_kind = right[:kind]
+          | if (_KEEPS_ENV[right_kind]) do
+              # Numeric literals already hold their value in the AST.
+              let rv = if (right_kind == "num"): right[:val]
+                       else: _ev(right, value, cur_env)
+              | if (op == "+"): acc = acc + rv
+                else: acc = _eval_bin(op, acc, rv)
+            end
             else do
               let rr = mq_eval(right, value, cur_env)
               | acc = _eval_bin(op, acc, rr[:val])
@@ -781,7 +807,10 @@ def mq_eval(ast, value, env):
         | var signal = _ctrl(first)
         | while (!is_none(stages) && signal == "none"):
             let stage = stages[0]
-            | if (_KEEPS_ENV[stage[:kind]]):
+            | let stage_kind = stage[:kind]
+            # Identity stages leave both the value and environment intact.
+            | if (stage_kind == "dot" || stage_kind == "self"): None
+              elif (_KEEPS_ENV[stage_kind]):
                 result_val = _ev(stage, result_val, result_env)
               else do
                 let result = mq_eval(stage, result_val, result_env)
@@ -808,8 +837,7 @@ def mq_eval(ast, value, env):
     elif (k == "unless"): _eval_unless(ast, value, env)
     elif (k == "do"):    mq_eval(ast[:body], value, env)
     elif (k == "fn"):    {val: {kind: "fn", params: ast[:params], body: ast[:body], env: env}, env: env}
-    elif (k == "while"):   _eval_while(ast, value, env)
-    elif (k == "until"):   _eval_until(ast, value, env)
+    elif (k == "while" || k == "until"): _eval_cond_loop(ast, value, env, k == "until")
     elif (k == "foreach"): _eval_foreach(ast, value, env)
 
     elif (k == "break") do
@@ -987,52 +1015,27 @@ def _eval_elifs(elifs, else_node, value, env):
     else: {val: None, env: env}
 end
 
-# ── while loop ────────────────────────────────────────────────────────────────
+# ── while / until loops ───────────────────────────────────────────────────────
 
-def _eval_while(ast, value, env):
-  var cur_env = env
+## `until` stops when its condition becomes true; `while` stops when it
+## becomes false. Continue keeps the previous value but retains new bindings.
+def _eval_cond_loop(ast, value, env, stop_when_true):
+  let condition = ast[:cond]
+  | let body = ast[:body]
+  | var cur_env = env
   | var cur_val = value
-  | var cond = _ev(ast[:cond], cur_val, cur_env)
-  | while (cond):
-      let br = mq_eval(ast[:body], cur_val, cur_env)
+  | var running = _ev(condition, cur_val, cur_env) != stop_when_true
+  | while (running):
+      let br = mq_eval(body, cur_val, cur_env)
       | let c = _ctrl(br)
       | cur_env = br[:env]
       | if (c == "break") do
           cur_val = br[:val]
-          | cond = false
-        end
-        elif (c == "continue") do
-          cond = _ev(ast[:cond], cur_val, cur_env)
+          | running = false
         end
         else do
-          cur_val = br[:val]
-          | cond = _ev(ast[:cond], cur_val, cur_env)
-        end
-    end
-  | {val: cur_val, env: cur_env}
-end
-
-# ── until loop ────────────────────────────────────────────────────────────────
-
-## until (cond): body end -- loops while cond is false (inverted `while`).
-def _eval_until(ast, value, env):
-  var cur_env = env
-  | var cur_val = value
-  | var cond = !_ev(ast[:cond], cur_val, cur_env)
-  | while (cond):
-      let br = mq_eval(ast[:body], cur_val, cur_env)
-      | let c = _ctrl(br)
-      | cur_env = br[:env]
-      | if (c == "break") do
-          cur_val = br[:val]
-          | cond = false
-        end
-        elif (c == "continue") do
-          cond = !_ev(ast[:cond], cur_val, cur_env)
-        end
-        else do
-          cur_val = br[:val]
-          | cond = !_ev(ast[:cond], cur_val, cur_env)
+          if (c != "continue"): cur_val = br[:val]
+          | running = _ev(condition, cur_val, cur_env) != stop_when_true
         end
     end
   | {val: cur_val, env: cur_env}
@@ -1050,7 +1053,14 @@ def _eval_foreach(ast, value, env):
   let iter_val = _ev(ast[:iter], value, env)
   | let iter_var = ast[:iter_var]
   | let body = ast[:body]
-  | if (_KEEPS_ENV[body[:kind]]): _eval_foreach_values(iter_var, iter_val, body, env)
+  | let body_kind = body[:kind]
+  # An identity body can reuse the input array. A bound None is excluded from
+  # the identifier case because `_ev` then tries builtin lookup instead.
+  | if (is_array(iter_val) &&
+      (body_kind == "dot" || body_kind == "self" ||
+       (body_kind == "ident" && body[:name] == iter_var && !contains(iter_val, None)))):
+      {val: iter_val, env: if (is_empty(iter_val)): env else: set(env, iter_var, last(iter_val))}
+    elif (_KEEPS_ENV[body_kind]): _eval_foreach_values(iter_var, iter_val, body, env)
     else: _eval_foreach_env(iter_var, iter_val, body, env)
 end
 

@@ -13,6 +13,11 @@ import "eval"
     body: {kind: "ident", name: "p7"}, env: {}}
 | let small_call = {kind: "call", name: "small", args: args[0:8]}
 | let small_env = {small: small_fn}
+| let default_params = params[0:7] + [{name: "p7", default: {kind: "num", val: 42}}]
+| let default_fn = {kind: "fn", name: "with_default", params: default_params,
+    body: {kind: "ident", name: "p7"}, env: {}}
+| let default_call = {kind: "call", name: "with_default", args: args[0:7]}
+| let default_env = {with_default: default_fn}
 |
 
 def bench_call_128_params():
@@ -28,5 +33,11 @@ end
 def bench_call_8_params_repeated():
   foreach (i, range(0, 999)):
     eval::mq_eval(small_call, None, small_env)[:val]
+  end
+end
+
+def bench_call_missing_default_repeated():
+  foreach (i, range(0, 9999)):
+    eval::mq_eval(default_call, None, default_env)[:val]
   end
 end

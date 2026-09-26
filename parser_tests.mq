@@ -50,6 +50,21 @@ def test_parse_numeric_rhs_keeps_precedence_and_postfix():
   | assert_eq(indexed[:right][:kind], "idx")
 end
 
+def test_parse_identifier_rhs_keeps_precedence_and_postfix():
+  let chain = _parse("1 + x - y")
+  | let precedence = _parse("1 + x * 3")
+  | let indexed = _parse("1 + x[0]")
+  | let called = _parse("1 + f(2)")
+  | let namespaced = _parse("1 + math::add(1, 2)")
+  | let suppressed = _parse("1 + x?")
+  | assert_eq(chain[:left][:op], "+")
+  | assert_eq(precedence[:right][:op], "*")
+  | assert_eq(indexed[:right][:kind], "idx")
+  | assert_eq(called[:right][:kind], "call")
+  | assert_eq(namespaced[:right][:name], "math::add")
+  | assert_eq(suppressed[:right][:kind], "trysuppress")
+end
+
 def test_parse_try_catch():
   let ast = _parse("try: 1 catch: 2")
   | assert_eq({kind: ast[:kind], body_kind: ast[:body][:kind], catch_kind: ast[:catch_body][:kind], catch_var: ast[:catch_var]},

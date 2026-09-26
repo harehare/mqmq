@@ -6,6 +6,8 @@ import "lexer"
 | import "eval"
 | let source = "1" + join(map(range(1, 2048), fn(i): " | ." end), "")
 | let ast = parser::mq_parse(lexer::lex(source))
+| let increment_source = "0" + join(map(range(1, 256), fn(i): " | . + 1" end), "")
+| let increment_ast = parser::mq_parse(lexer::lex(increment_source))
 |
 
 def bench_pipe_2048():
@@ -16,5 +18,11 @@ end
 def bench_pipe_2048_repeated():
   foreach (i, range(0, 19)):
     eval::mq_eval(ast, None, {})[:val]
+  end
+end
+
+def bench_pipe_increment_256_repeated():
+  foreach (i, range(0, 19)):
+    eval::mq_eval(increment_ast, None, {})[:val]
   end
 end

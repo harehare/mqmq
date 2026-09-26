@@ -5,6 +5,7 @@ import "lexer"
 | import "parser"
 | let long_query = join(map(range(1, 1024), fn(i): to_string(i) end), " + ")
 | let long_tokens = lexer::lex(long_query)
+| let identifier_tokens = lexer::lex(join(map(range(1, 1024), fn(i): "x" end), " + "))
 | let long_whitespace = join(map(range(0, 8191), fn(i): " " end), "") + "1"
 |
 
@@ -15,6 +16,12 @@ end
 def bench_parse_long_arithmetic_repeated():
   foreach (i, range(0, 19)):
     parser::mq_parse(long_tokens)
+  end
+end
+
+def bench_parse_long_identifiers_repeated():
+  foreach (i, range(0, 19)):
+    parser::mq_parse(identifier_tokens)
   end
 end
 

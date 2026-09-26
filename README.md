@@ -199,22 +199,28 @@ A few characteristics of the host `mq` runtime matter a lot for code written, li
 
 - **Index/slice strings by character array, not by position.** `s[i]`/`s[i:j]` walks grapheme boundaries from the start each time, so `lexer.mq` grapheme-splits once (`graphemes(query)`) and indexes that instead.
 - **Prefer `foreach`'s accumulator over a manual `while` + `+=` loop.** A hand-rolled `+=` loop copies the whole array on every append; `foreach` collects in place. `eval.mq`'s `_eval_foreach` uses this for the interpreted language's own `foreach`.
+- **Reuse arrays for identity `foreach` bodies.** When the body returns each item unchanged (`.`, `self`, or the loop variable), the evaluator returns the input array and binds only the final item.
 - **Build lookup tables once, at module load**, not per call (`lexer.mq`'s keyword set, `parser.mq`'s `_BIN_PREC`).
 - **Let the host regex engine split the query into lexemes in one call**, falling back to a char-by-char scanner only for cases it can't represent (interpolated strings, non-ASCII, multi-code-point graphemes).
 - **Dict/`set()` construction is expensive** — confirmed O(dict size) per `set()` call, so `n` sequential `set()`s cost O(n²). Minimize dict allocations and repeated `set()` calls in hot paths; `has()`/`keys()` are comparatively cheap.
 - **Build dictionary literals with `dict(entries)`** after evaluating their key/value pairs. This constructs the result in one pass instead of copying it with `set()` for every pair.
-- **Bind fully supplied functions in one pass** when they have many parameters. Missing arguments still bind one at a time so default expressions can read earlier parameters.
+- **Evaluate nested collection literals as values.** Arrays and dictionaries inside another expression return their value directly, avoiding a temporary `{val, env}` result for each nested literal.
+- **Bind fully supplied functions in one pass** when they have many parameters. Missing arguments still bind one at a time so default expressions can read earlier parameters; their argument count is computed once per call.
 - **Call single-parameter functions directly** when their argument is supplied. This avoids building an argument array and running the general binding loop for each recursive call.
+- **Read builtin argument counts once per call.** The common builtin dispatcher reuses that count when selecting explicit arguments or the current pipeline value.
 - **Bind large destructuring patterns in one pass.** Array and dictionary patterns with at least 32 names build one new environment instead of copying it for every name. Small patterns retain the direct binding path.
-- **Collect very long destructuring patterns with `foreach`.** After roughly 256 comma-separated names, the parser collects the remaining names without copying the growing array for each one.
-- **Compare literal match arms directly** so a long list of non-matching literals does not allocate a result dictionary for every arm.
+- **Collect long destructuring patterns with `foreach`.** After roughly 64 comma-separated names, the parser collects the remaining names without copying the growing array for each one.
+- **Compare literal match arms directly** so a long list of non-matching literals does not allocate a result dictionary for every arm. Number, string, boolean, and `None` patterns use their AST values without calling the evaluator for each arm.
+- **Evaluate simple `if/else` values directly.** Without `elif` arms, value-only evaluation takes the selected branch without setting up an arm scan.
 - **Classify `.h` and `.text` selectors with one Markdown-name lookup per node.** Their older predicates called several host helpers that each repeated the lookup.
-- **Walk long pipes iteratively**, not recursively. The evaluator flattens a left-associated `a | b | c` chain into two-item array links first, avoiding deep call stacks. Stages that cannot change the environment use value-only evaluation, avoiding a result dictionary per stage.
+- **Walk long pipes iteratively**, not recursively. The evaluator flattens a left-associated `a | b | c` chain into two-item array links first, avoiding deep call stacks. Stages that cannot change the environment use value-only evaluation, avoiding a result dictionary per stage. Identity stages (`.` and `self`) leave the value and environment in place without an evaluation call.
 - **Walk longer binary chains iteratively** as well. Two-item array links store the stages; the evaluator avoids a result dictionary and recursive call for each intermediate operator while preserving short-circuit behavior and bindings. Short expressions keep the simpler path.
+- **Read numeric right operands directly in long binary chains.** Their values are already in the AST; repeated addition also uses the host operator directly instead of calling the general operator dispatcher for every stage.
 - **Evaluate common short binary operations directly** when the left operand keeps its environment. This removes an extra function call and operator dispatch for `+`, `-`, and `<`, including those inside recursive arithmetic.
 - **Bound a `foreach`-driving `range()` to its own span, not to end-of-file.** `range()` eagerly allocates, so sizing it as `range(cur, len(toks) - 1)` made parsing/lexing quadratic when a file had several lists/calls/dicts/escaped strings. `_find_closer` (parser.mq) and `_find_string_close` (lexer.mq) prescan for the real closing token instead.
 - **Read each token once while finding a matching delimiter.** `_find_closer` caches the token type and value and checks punctuation only for operator tokens, reducing repeated lookups in long arrays, calls, and dictionaries.
-- **Read a standalone numeric right operand directly** in long binary expressions. Higher-precedence operators and postfix syntax still use the normal parser.
+- **Read standalone numeric and identifier right operands directly** in long binary expressions. Higher-precedence operators and postfix syntax still use the normal parser; numeric operands also reuse the following operator's precedence.
+- **Inspect the next token directly for namespaced identifiers.** The lexer always appends an EOF token, so identifier parsing can check for `::` without a bounds-checking helper call.
 - **Collect interpolated-string text in spans.** The lexer slices text between escapes and `${...}` expressions, then joins each segment once. For many escapes or interpolation expressions, it stores later pieces as links to avoid repeated array copies.
 - **Decode escapes directly in each lexer path.** An escape with a following character always consumes two graphemes, and only `\\n` and `\\t` change that character. Skipping a per-escape result dictionary reduces work in escaped strings.
 
@@ -254,7 +260,7 @@ mq-bench benchmarks_lists.mq --iterations 3 --warmup 1
 mq-bench benchmarks_selectors.mq --iterations 3 --warmup 1
 ```
 
-`benchmarks_scanning.mq` covers a long arithmetic expression (including repeated parsing) and a long whitespace run without changing the setup cost of `benchmarks.mq`:
+`benchmarks_scanning.mq` covers long numeric and identifier expressions (including repeated parsing) and a long whitespace run without changing the setup cost of `benchmarks.mq`:
 
 ```sh
 mq-bench benchmarks_scanning.mq --iterations 3 --warmup 1
@@ -272,7 +278,7 @@ mq-bench benchmarks_branches.mq --iterations 3 --warmup 1
 mq-bench benchmarks_modules.mq --iterations 3 --warmup 1
 ```
 
-`benchmarks_collections.mq` measures an interpreted `foreach` over 8,192 items:
+`benchmarks_collections.mq` measures identity and transforming `foreach` bodies over 8,192 items:
 
 ```sh
 mq-bench benchmarks_collections.mq --iterations 3 --warmup 1
@@ -297,10 +303,23 @@ mq-bench benchmarks_pipes.mq --iterations 3 --warmup 1
 mq-bench benchmarks_dicts.mq --iterations 10 --warmup 2
 ```
 
-`benchmarks_calls.mq` measures function calls with 8 and 128 supplied parameters:
+It also measures arrays and dictionaries nested inside an array. `benchmarks_loops.mq`
+compares 1,000-iteration `while` and `until` loops:
+
+```sh
+mq-bench benchmarks_loops.mq --iterations 10 --warmup 2
+```
+
+`benchmarks_calls.mq` measures function calls with 8 and 128 supplied parameters, plus calls with a missing defaulted parameter:
 
 ```sh
 mq-bench benchmarks_calls.mq --iterations 10 --warmup 2
+```
+
+`benchmarks_builtins.mq` measures repeated calls through the shared builtin dispatcher:
+
+```sh
+mq-bench benchmarks_builtins.mq --iterations 10 --warmup 2
 ```
 
 `benchmarks_patterns.mq` measures array and dictionary destructuring with 8, 16, and 128 names:

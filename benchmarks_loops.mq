@@ -1,0 +1,15 @@
+# Run with: mq-bench benchmarks_loops.mq --iterations 10 --warmup 2
+# Repeated interpreted loops expose per-iteration evaluator overhead.
+
+import "lexer" | import "parser" | import "eval"
+| let while_ast = parser::mq_parse(lexer::lex("var i = 0 | while (i < 1000): i += 1 end | i"))
+| let until_ast = parser::mq_parse(lexer::lex("var i = 0 | until (i >= 1000): i += 1 end | i"))
+|
+
+def bench_while_1000():
+  eval::mq_eval(while_ast, None, {})[:val]
+end
+
+def bench_until_1000():
+  eval::mq_eval(until_ast, None, {})[:val]
+end

@@ -83,11 +83,19 @@ def test_eval_control_flow(query, md, expected):
   assert_eq(_run(query, md), expected)
 end
 
+def test_foreach_identity_preserves_items_and_final_binding():
+  assert_eq(_run("foreach (x, [1, 2, 3]): x end", None), [1, 2, 3])
+  | assert_eq(_run("foreach (x, [1, 2, 3]): self end | x", None), 3)
+  | assert_eq(_run("let x = 9 | foreach (x, []): . end | x", None), 9)
+  | assert_eq(_run("foreach (x, [1, None]): . end", None), [1, None])
+end
+
 # -- break / continue --
 
 # @parametrize([
 #   ["var i = 0 | while (true): i += 1 | if (i == 5): break i end end", "", 5],
 #   ["var i = 0 | var s = 0 | while (i < 10): i += 1 | if (i % 2 == 0): continue else do s += i end end | s", "", 25],
+#   ["var i = 0 | var s = 0 | until (i >= 10): i += 1 | if (i % 2 == 0): continue else do s += i end end | s", "", 25],
 #   ["foreach (x, [1,2,3,4,5]): if (x == 3): break \"stopped\" else: x end end", "", "stopped"],
 #   ["foreach (x, [1,2,3,4,5]): if (x == 3): continue else: x end end", "", [1, 2, 4, 5]],
 # ])
@@ -310,6 +318,9 @@ end
 
 # @parametrize([
 #   ["let v = 2 | match (v): | 1: \"one\" | 2: \"two\" | _: \"other\" end", "", "two"],
+#   ["match (\"b\"): | \"a\": 1 | \"b\": 2 end", "", 2],
+#   ["match (true): | false: 1 | true: 2 end", "", 2],
+#   ["match (None): | 1: 1 | None: 2 end", "", 2],
 #   ["let v = \"x\" | match (v): | :string: \"is string\" | :number: \"is number\" | _: \"other\" end", "", "is string"],
 #   ["let arr = [] | match (arr): | []: \"empty\" | [x]: x | [head, ..tail]: head end", "", "empty"],
 #   ["let arr = [1,2,3] | match (arr): | []: \"empty\" | [x]: x | [head, ..tail]: head end", "", 1],

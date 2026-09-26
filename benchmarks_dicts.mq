@@ -8,6 +8,10 @@ import "eval"
      val: {kind: "num", val: i}}
   end)
 | let ast = {kind: "dict", pairs: pairs}
+| let nested_dict = {kind: "dict", pairs: pairs[0:4]}
+| let nested_array = {kind: "arr", items: map(range(0, 255), fn(i): nested_dict end)}
+| let inner_array = {kind: "arr", items: [{kind: "num", val: 1}, {kind: "num", val: 2}]}
+| let array_of_arrays = {kind: "arr", items: map(range(0, 255), fn(i): inner_array end)}
 |
 
 def bench_dict_1024():
@@ -18,4 +22,12 @@ def bench_dict_1024_repeated():
   foreach (i, range(0, 9)):
     eval::mq_eval(ast, None, {})[:val]
   end
+end
+
+def bench_nested_dicts():
+  eval::mq_eval(nested_array, None, {})[:val]
+end
+
+def bench_nested_arrays():
+  eval::mq_eval(array_of_arrays, None, {})[:val]
 end
