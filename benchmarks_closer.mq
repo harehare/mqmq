@@ -1,0 +1,46 @@
+# Run with: mq-bench benchmarks_closer.mq --iterations 10 --warmup 2
+# Parse pretokenized lists repeatedly so setup does not dominate the result.
+
+import "lexer" | import "parser"
+| let nums_64 = join(map(range(0, 63), fn(i): to_string(i) end), ",")
+| let nums_2048 = join(map(range(0, 2047), fn(i): to_string(i) end), ",")
+| let array_64 = lexer::lex("[" + nums_64 + "]")
+| let array_2048 = lexer::lex("[" + nums_2048 + "]")
+| let args_2048 = lexer::lex("f(" + nums_2048 + ")")
+| let dict_2048 = lexer::lex("{" + join(map(range(0, 2047), fn(i): "k" + to_string(i) + ":" + to_string(i) end), ",") + "}")
+| let small_array = lexer::lex("[1]")
+| let small_call = lexer::lex("f(1)")
+| let small_dict = lexer::lex("{a: 1}")
+|
+
+def bench_parse_small_lists_repeated():
+  foreach (i, range(0, 499)):
+    parser::mq_parse(small_array)
+    | parser::mq_parse(small_call)
+    | parser::mq_parse(small_dict)
+  end
+end
+
+def bench_parse_array_64_repeated():
+  foreach (i, range(0, 99)):
+    parser::mq_parse(array_64)
+  end
+end
+
+def bench_parse_array_2048_repeated():
+  foreach (i, range(0, 4)):
+    parser::mq_parse(array_2048)
+  end
+end
+
+def bench_parse_args_2048_repeated():
+  foreach (i, range(0, 4)):
+    parser::mq_parse(args_2048)
+  end
+end
+
+def bench_parse_dict_2048_repeated():
+  foreach (i, range(0, 4)):
+    parser::mq_parse(dict_2048)
+  end
+end

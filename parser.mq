@@ -96,6 +96,15 @@ def _expect_v(toks, pos, v):
       error("Expected '" + to_string(v) + "' but got '" + to_string(tok[:v]) + "'")
 end
 
+## Require punctuation, not a string literal with the same text.
+def _expect_op(toks, pos, v):
+  let tok = toks[pos]
+  | if (tok[:t] == "op" && tok[:v] == v):
+      pos + 1
+    else:
+      error("Expected operator '" + v + "' but got '" + to_string(tok[:v]) + "'")
+end
+
 ## Require a token type, returning the token.
 def _expect_t(toks, pos, t):
   let tok = toks[pos]
@@ -568,11 +577,11 @@ end
 # Handle bracket subscript: base[...] returning {node, pos}
 def _parse_subscript(toks, base_node, pos):
   let p2 = pos + 1
-  | if (_at_v(toks, p2, ":")) do
+  | if (_at_op(toks, p2, ":")) do
         let key = _expect_t(toks, p2 + 1, "atom")[:v]
-        | {node: {kind: "dkey", base: base_node, key: key}, pos: _expect_v(toks, p2 + 2, "]")}
+        | {node: {kind: "dkey", base: base_node, key: key}, pos: _expect_op(toks, p2 + 2, "]")}
       end
-    elif (_at_v(toks, p2, "]")):
+    elif (_at_op(toks, p2, "]")):
       {node: base_node, pos: p2 + 1}
     else:
       _parse_index_or_slice(toks, base_node, p2)
@@ -583,15 +592,15 @@ def _parse_index_or_slice(toks, base_node, pos):
   | if (_at_v(toks, ir[:pos], ":")):
       _parse_slice(toks, base_node, ir[:node], ir[:pos] + 1)
     else:
-      {node: {kind: "idx", base: base_node, index: ir[:node]}, pos: _expect_v(toks, ir[:pos], "]")}
+      {node: {kind: "idx", base: base_node, index: ir[:node]}, pos: _expect_op(toks, ir[:pos], "]")}
 end
 
 def _parse_slice(toks, base_node, from_node, pos):
-  if (_at_v(toks, pos, "]")):
+  if (_at_op(toks, pos, "]")):
     {node: {kind: "slice", base: base_node, from: from_node, to: None}, pos: pos + 1}
   else do
     let tr = _parse_expr(toks, pos)
-    | {node: {kind: "slice", base: base_node, from: from_node, to: tr[:node]}, pos: _expect_v(toks, tr[:pos], "]")}
+    | {node: {kind: "slice", base: base_node, from: from_node, to: tr[:node]}, pos: _expect_op(toks, tr[:pos], "]")}
   end
 end
 
@@ -637,13 +646,19 @@ end
 def _find_closer(toks, pos):
   var depth = 0
   | var cur = pos
-  | while (!_at_eof(toks, cur)):
+  | let n = len(toks)
+  | while (cur < n):
       let tok = toks[cur]
-      | if (tok[:t] == "op" && (tok[:v] == "(" || tok[:v] == "[" || tok[:v] == "{")):
-          depth += 1
-        elif (tok[:t] == "op" && (tok[:v] == ")" || tok[:v] == "]" || tok[:v] == "}")) do
-          if (depth == 0): break
-          | depth -= 1
+      | let t = tok[:t]
+      | if (t == "eof"): break
+      | if (t == "op") do
+          let v = tok[:v]
+          | if (v == "(" || v == "[" || v == "{"):
+              depth += 1
+            elif (v == ")" || v == "]" || v == "}") do
+              if (depth == 0): break
+              | depth -= 1
+            end
         end
       | cur += 1
     end
@@ -656,24 +671,24 @@ end
 # and one-item cases return before creating a range, which matters for many
 # small lists embedded in one large query.
 def _parse_call_args(toks, pos):
-  if (_at_v(toks, pos, ")")):
+  if (_at_op(toks, pos, ")")):
     {args: [], pos: pos + 1}
   else do
     let first_arg = _parse_list_expr(toks, pos)
     | var cur = _skip_v(toks, first_arg[:pos], ",")
-    | if (_at_v(toks, cur, ")")):
+    | if (_at_op(toks, cur, ")")):
         {args: [first_arg[:node]], pos: cur + 1}
       else do
         let rest = foreach (i, range(cur, _find_closer(toks, cur))):
           if (i < cur): continue
-          elif (_at_v(toks, cur, ")") || _at_eof(toks, cur)): break
+          elif (_at_op(toks, cur, ")") || _at_eof(toks, cur)): break
           else do
             let ar = _parse_list_expr(toks, cur)
             | cur = _skip_v(toks, ar[:pos], ",")
             | ar[:node]
           end
         end
-        | {args: [first_arg[:node]] + rest, pos: _expect_v(toks, cur, ")")}
+        | {args: [first_arg[:node]] + rest, pos: _expect_op(toks, cur, ")")}
       end
   end
 end
@@ -741,43 +756,43 @@ end
 
 def _parse_array(toks, pos):
   let p2 = pos + 1
-  | if (_at_v(toks, p2, "]")):
+  | if (_at_op(toks, p2, "]")):
       {node: {kind: "arr", items: []}, pos: p2 + 1}
     else do
       let first_item = _parse_list_expr(toks, p2)
       | var cur = _skip_v(toks, first_item[:pos], ",")
-      | if (_at_v(toks, cur, "]")):
+      | if (_at_op(toks, cur, "]")):
           {node: {kind: "arr", items: [first_item[:node]]}, pos: cur + 1}
         else do
           let rest = foreach (i, range(cur, _find_closer(toks, cur))):
             if (i < cur): continue
-            elif (_at_v(toks, cur, "]") || _at_eof(toks, cur)): break
+            elif (_at_op(toks, cur, "]") || _at_eof(toks, cur)): break
             else do
               let ir = _parse_list_expr(toks, cur)
               | cur = _skip_v(toks, ir[:pos], ",")
               | ir[:node]
             end
           end
-          | {node: {kind: "arr", items: [first_item[:node]] + rest}, pos: _expect_v(toks, cur, "]")}
+          | {node: {kind: "arr", items: [first_item[:node]] + rest}, pos: _expect_op(toks, cur, "]")}
         end
     end
 end
 
 def _parse_dict(toks, pos):
   let p2 = pos + 1
-  | if (_at_v(toks, p2, "}")):
+  | if (_at_op(toks, p2, "}")):
       {node: {kind: "dict", pairs: []}, pos: p2 + 1}
     else do
       let first_key = _parse_dict_key(toks[p2])
       | let first_val = _parse_list_expr(toks, _expect_v(toks, p2 + 1, ":"))
       | var cur = _skip_v(toks, first_val[:pos], ",")
       | let first_pair = {key: first_key, val: first_val[:node]}
-      | if (_at_v(toks, cur, "}")):
+      | if (_at_op(toks, cur, "}")):
           {node: {kind: "dict", pairs: [first_pair]}, pos: cur + 1}
         else do
           let rest = foreach (i, range(cur, _find_closer(toks, cur))):
             if (i < cur): continue
-            elif (_at_v(toks, cur, "}") || _at_eof(toks, cur)): break
+            elif (_at_op(toks, cur, "}") || _at_eof(toks, cur)): break
             else do
               let key = _parse_dict_key(toks[cur])
               | let vr = _parse_list_expr(toks, _expect_v(toks, cur + 1, ":"))
@@ -785,7 +800,7 @@ def _parse_dict(toks, pos):
               | {key: key, val: vr[:node]}
             end
           end
-          | {node: {kind: "dict", pairs: [first_pair] + rest}, pos: _expect_v(toks, cur, "}")}
+          | {node: {kind: "dict", pairs: [first_pair] + rest}, pos: _expect_op(toks, cur, "}")}
         end
     end
 end

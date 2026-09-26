@@ -192,3 +192,25 @@ def test_parse_nested_lists():
   | assert_eq(len(items[2][:pairs]), 2)
   | assert_eq(len(items[2][:pairs][0][:val][:items]), 2)
 end
+
+def test_parse_closers_inside_string_literals():
+  let items = _parse("[1, \"]\", [2, 3], {a: 4}]")[:items]
+  | assert_eq(len(items), 4)
+  | assert_eq(items[1], {kind: "str", val: "]"})
+  | assert_eq(items[2][:kind], "arr")
+  | let args = _parse("f(1, \")\", [2, 3])")[:args]
+  | assert_eq(len(args), 3)
+  | assert_eq(args[1], {kind: "str", val: ")"})
+  | let pairs = _parse("{a: 1, b: \"}\", c: [2, 3]}")[:pairs]
+  | assert_eq(len(pairs), 3)
+  | assert_eq(pairs[1][:val], {kind: "str", val: "}"})
+  | let index = _parse("[1, 2][\"]\"]")
+  | assert_eq(index[:kind], "idx")
+  | assert_eq(index[:index], {kind: "str", val: "]"})
+  | let slice = _parse("[1, 2][0:\"]\"]")
+  | assert_eq(slice[:kind], "slice")
+  | assert_eq(slice[:to], {kind: "str", val: "]"})
+  | let colon_index = _parse("[1, 2][\":\"]")
+  | assert_eq(colon_index[:kind], "idx")
+  | assert_eq(colon_index[:index], {kind: "str", val: ":"})
+end
