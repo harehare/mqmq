@@ -89,6 +89,32 @@ def test_interp_string_segments():
   | assert_eq(toks[0][:v], [{kind: "text", val: "a"}, {kind: "expr", val: "1+2"}, {kind: "text", val: "b"}])
 end
 
+def test_interp_multiple_expressions():
+  let toks = _lex("s\"abc${1}def${2}ghi\"")
+  | assert_eq(toks[0][:v], [
+      {kind: "text", val: "abc"}, {kind: "expr", val: "1"},
+      {kind: "text", val: "def"}, {kind: "expr", val: "2"},
+      {kind: "text", val: "ghi"},
+    ])
+end
+
+def test_interp_escape_after_expression():
+  let toks = _lex("s\"a${1}b\\nc\"")
+  | assert_eq(toks[0][:v], [
+      {kind: "text", val: "a"}, {kind: "expr", val: "1"},
+      {kind: "text", val: "b\nc"},
+    ])
+end
+
+def test_interp_escape_before_expression():
+  let source = "s\"" + "a\\\"b" + "${1}c\""
+  | let toks = _lex(source)
+  | assert_eq(toks[0][:v], [
+      {kind: "text", val: "a\"b"}, {kind: "expr", val: "1"},
+      {kind: "text", val: "c"},
+    ])
+end
+
 def test_interp_string_no_expr():
   let toks = _lex("s\"plain\"")
   | assert_eq(toks[0][:v], [{kind: "text", val: "plain"}])

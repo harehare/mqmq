@@ -1,0 +1,57 @@
+# Run with: mq-bench benchmarks_patterns.mq --iterations 10 --warmup 2
+# Large destructuring patterns against a populated environment.
+
+import "eval"
+| let env = dict(map(range(0, 1023), fn(i): ["old" + to_string(i), i] end))
+| let names = map(range(0, 127), fn(i): "p" + to_string(i) end)
+| let values = range(0, 127)
+| let array_ast = {kind: "let_destructure", pattern: {kind: "arraypat", names: names, rest: "tail"},
+    val: {kind: "self"}}
+| let dict_ast = {kind: "let_destructure", pattern: {kind: "dictpat", names: names},
+    val: {kind: "self"}}
+| let dict_value = dict(map(range(0, 127), fn(i): ["p" + to_string(i), i] end))
+| let small_array_ast = {kind: "let_destructure", pattern: {kind: "arraypat", names: names[0:8], rest: None},
+    val: {kind: "self"}}
+| let small_dict_ast = {kind: "let_destructure", pattern: {kind: "dictpat", names: names[0:8]},
+    val: {kind: "self"}}
+| let medium_array_ast = {kind: "let_destructure", pattern: {kind: "arraypat", names: names[0:16], rest: None},
+    val: {kind: "self"}}
+| let medium_dict_ast = {kind: "let_destructure", pattern: {kind: "dictpat", names: names[0:16]},
+    val: {kind: "self"}}
+|
+
+def bench_array_pattern_128_repeated():
+  foreach (i, range(0, 9)):
+    eval::mq_eval(array_ast, values, env)[:env]["p127"]
+  end
+end
+
+def bench_dict_pattern_128_repeated():
+  foreach (i, range(0, 9)):
+    eval::mq_eval(dict_ast, dict_value, env)[:env]["p127"]
+  end
+end
+
+def bench_array_pattern_8_empty_env():
+  foreach (i, range(0, 999)):
+    eval::mq_eval(small_array_ast, values, {})[:env]["p7"]
+  end
+end
+
+def bench_dict_pattern_8_empty_env():
+  foreach (i, range(0, 999)):
+    eval::mq_eval(small_dict_ast, dict_value, {})[:env]["p7"]
+  end
+end
+
+def bench_array_pattern_16_empty_env():
+  foreach (i, range(0, 999)):
+    eval::mq_eval(medium_array_ast, values, {})[:env]["p15"]
+  end
+end
+
+def bench_dict_pattern_16_empty_env():
+  foreach (i, range(0, 999)):
+    eval::mq_eval(medium_dict_ast, dict_value, {})[:env]["p15"]
+  end
+end

@@ -21,6 +21,22 @@ def test_eval_selector_array_and_scalar():
   | assert_eq(eval::mq_eval(ast, other, {})[:val], [])
 end
 
+def test_eval_heading_and_text_selectors():
+  let heading = to_h("heading", 1)
+  | let body = to_md_text("body")
+  | let code = to_code("code", "rust")
+  | let list = to_md_list("item", 0)
+  | let values = [heading, body, code, list]
+  | assert_eq(eval::mq_eval({kind: "sel", name: "h"}, values, {})[:val], [heading])
+  | assert_eq(eval::mq_eval({kind: "sel", name: "text"}, values, {})[:val], [body])
+end
+
+def test_eval_dict_literal_preserves_values_and_duplicate_keys():
+  let result = _run("{a: 1, b: [2, 3], a: 4, nested: {x: None}}", None)
+  | assert_eq(result, {a: 4, b: [2, 3], nested: {x: None}})
+  | assert_eq(keys(result), ["a", "b", "nested"])
+end
+
 # -- literals / arithmetic / comparison / boolean --
 
 # @parametrize([
@@ -99,9 +115,48 @@ def test_eval_operand_bindings(query, expected):
   | assert_eq(eval::mq_eval(ast, None, {z: 7})[:val], expected)
 end
 
+# @parametrize([
+#   ["1 + 2 + 3 + 4", 10],
+#   ["1 + 2 * 3 - 4 + 5", 8],
+#   ["false && error(\"unreachable\") && error(\"unreachable\") && error(\"unreachable\")", false],
+#   ["true || error(\"unreachable\") || error(\"unreachable\") || error(\"unreachable\")", true],
+#   ["None ?? 5 ?? error(\"unreachable\") ?? error(\"unreachable\")", 5],
+#   ["1 + (let x = 2 | x) + x + x", 7],
+#   ["1 + (let x = 2 | x) + (x += 1) + x", 9],
+# ])
+def test_eval_binary_chains(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+def test_eval_long_binary_chain():
+  let query = join(map(range(1, 512), fn(i): "1" end), " + ")
+  | assert_eq(_run(query, None), 512)
+end
+
 def test_eval_long_pipe_stops_on_break():
   let steps = join(map(range(1, 64), fn(i): "x += 1" end), " | ")
   | assert_eq(_run("var x = 0 | " + steps + " | break x | error(\"unreachable\")", ""), 64)
+end
+
+def test_eval_long_pipe_value_stages_keep_environment_and_break():
+  let steps = join(map(range(0, 31), fn(i): ". + 1" end), " | ")
+  | assert_eq(_run("let base = 5 | 0 | " + steps + " | break base + . | error(\"unreachable\")", None), 37)
+end
+
+def test_many_supplied_parameters_preserve_closure_and_shadowing():
+  assert_eq(_run("let outer = 100 | def f(a,b,c,d,e,g,h,i): outer + a + i end | f(1,2,3,4,5,6,7,8)", None), 109)
+  | assert_eq(_run("def f(f,a,b,c,d,e,g,h): f end | f(7,1,2,3,4,5,6,8)", None), 7)
+  | assert_eq(_run("def f(a,b,c,d,e,g,h,i=error(\"unreachable\")): i end | f(1,2,3,4,5,6,7,8)", None), 8)
+  | assert_eq(_run("def f(a,b,c,d,e,g,h,i=h+1): i end | f(1,2,3,4,5,6,7)", None), 8)
+  | assert_eq(_run("def f(n,a,b,c,d,e,g,h): if (n == 0): h else: f(n-1,a,b,c,d,e,g,h+1) end | f(3,0,0,0,0,0,0,0)", None), 3)
+end
+
+def test_one_argument_call_preserves_shadowing_defaults_and_closure():
+  assert_eq(_run("def f(f): f end | f(9)", None), 9)
+  | assert_eq(_run("def f(x=error(\"unreachable\")): x + 1 end | f(2)", None), 3)
+  | assert_eq(_run("def f(x=7): x + 1 end | f()", None), 8)
+  | assert_eq(_run("let y = 4 | let f = fn(x): x + y end | f(2)", None), 6)
+  | assert_eq(_run("def f(x): x end | f(1, 2)", None), 1)
 end
 
 # -- try / catch --
@@ -223,6 +278,34 @@ def test_eval_destructure(query, md, expected):
   assert_eq(_run(query, md), expected)
 end
 
+def test_large_array_destructure_preserves_shadowing_missing_and_rest():
+  let names = map(range(0, 31), fn(i): "p" + to_string(i) end) + ["p0"]
+  | let ast = {kind: "let_destructure", pattern: {kind: "arraypat", names: names, rest: "p1"},
+      val: {kind: "self"}}
+  | let result = eval::mq_eval(ast, [10, 20], {p0: 99, sentinel: 42})[:env]
+  | assert_eq(result["p0"], None)
+  | assert_eq(result["p1"], [])
+  | assert_eq(result["p31"], None)
+  | assert_eq(result["sentinel"], 42)
+  | assert_eq(keys(result)[0:3], ["p0", "sentinel", "p1"])
+  | let with_rest = eval::mq_eval(ast, range(0, 34), {})[:env]
+  | assert_eq(with_rest["p0"], 32)
+  | assert_eq(with_rest["p1"], [33, 34])
+  | assert_eq(with_rest["p31"], 31)
+end
+
+def test_large_dict_destructure_preserves_shadowing_and_missing():
+  let names = map(range(0, 31), fn(i): "p" + to_string(i) end) + ["p0"]
+  | let ast = {kind: "let_destructure", pattern: {kind: "dictpat", names: names},
+      val: {kind: "self"}}
+  | let result = eval::mq_eval(ast, {p0: 10, p1: 20}, {p0: 99, sentinel: 42})[:env]
+  | assert_eq(result["p0"], 10)
+  | assert_eq(result["p1"], 20)
+  | assert_eq(result["p31"], None)
+  | assert_eq(result["sentinel"], 42)
+  | assert_eq(keys(result)[0:3], ["p0", "sentinel", "p1"])
+end
+
 # -- match expression --
 
 # @parametrize([
@@ -233,6 +316,7 @@ end
 #   ["let obj = {\"name\": \"Alice\", \"age\": 30} | match (obj): | {name, age}: name | _: \"unknown\" end", "", "Alice"],
 #   ["let n = 5 | match (n): | x if (x > 0): \"positive\" | x if (x < 0): \"negative\" | _: \"zero\" end", "", "positive"],
 #   ["let x = 2 | match (x): | 1 || 2 || 3: \"small\" | 4 || 5: \"medium\" | _: \"other\" end", "", "small"],
+#   ["match (2): | 2 if (false): 0 | 2 if (true): 4 | _: 9 end", "", 4],
 # ])
 def test_eval_match(query, md, expected):
   assert_eq(_run(query, md), expected)

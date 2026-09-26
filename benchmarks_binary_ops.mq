@@ -1,0 +1,36 @@
+# Run with: mq-bench benchmarks_binary_ops.mq --iterations 10 --warmup 2
+# Short value-only operators exercised inside recursive expressions.
+
+import "eval"
+| let left = {kind: "ident", name: "n"}
+| let right = {kind: "num", val: 1}
+| let add_ast = {kind: "bin", op: "+", left: left, right: right}
+| let sub_ast = {kind: "bin", op: "-", left: left, right: right}
+| let less_ast = {kind: "bin", op: "<", left: left, right: right}
+| let equal_ast = {kind: "bin", op: "==", left: left, right: right}
+| let env = {n: 10}
+|
+
+def bench_add_repeated():
+  foreach (i, range(0, 9999)):
+    eval::_ev_bin(add_ast, None, env)
+  end
+end
+
+def bench_sub_repeated():
+  foreach (i, range(0, 9999)):
+    eval::_ev_bin(sub_ast, None, env)
+  end
+end
+
+def bench_less_repeated():
+  foreach (i, range(0, 9999)):
+    eval::_ev_bin(less_ast, None, env)
+  end
+end
+
+def bench_equal_repeated():
+  foreach (i, range(0, 9999)):
+    eval::_ev_bin(equal_ast, None, env)
+  end
+end

@@ -4,6 +4,7 @@
 
 import "eval"
 | let headings = map(range(0, 1023), fn(i): to_h("heading", 1) end)
+| let h_ast = {kind: "sel", name: "h"}
 | let h6_ast = {kind: "sel", name: "h6"}
 | let text_ast = {kind: "sel", name: "text"}
 |
@@ -14,4 +15,16 @@ end
 
 def bench_selector_text():
   eval::mq_eval(text_ast, headings, {})[:val]
+end
+
+def bench_selector_h_repeated():
+  foreach (i, range(0, 99)):
+    eval::mq_eval(h_ast, headings, {})[:val]
+  end
+end
+
+def bench_selector_text_repeated():
+  foreach (i, range(0, 99)):
+    eval::mq_eval(text_ast, headings, {})[:val]
+  end
 end

@@ -1,0 +1,50 @@
+# Run with: mq-bench benchmarks_parser_patterns.mq --iterations 10 --warmup 2
+# Long destructuring patterns parsed repeatedly.
+
+import "lexer" | import "parser"
+| let names_1024 = join(map(range(0, 1023), fn(i): "p" + to_string(i) end), ",")
+| let array_tokens = lexer::lex("let [" + names_1024 + "] = []")
+| let dict_tokens = lexer::lex("let {" + names_1024 + "} = {}")
+| let names_64 = join(map(range(0, 63), fn(i): "p" + to_string(i) end), ",")
+| let array_tokens_64 = lexer::lex("let [" + names_64 + "] = []")
+| let dict_tokens_64 = lexer::lex("let {" + names_64 + "} = {}")
+| let names_512 = join(map(range(0, 511), fn(i): "p" + to_string(i) end), ",")
+| let array_tokens_512 = lexer::lex("let [" + names_512 + "] = []")
+| let dict_tokens_512 = lexer::lex("let {" + names_512 + "} = {}")
+|
+
+def bench_parse_array_pattern_1024_repeated():
+  foreach (i, range(0, 4)):
+    parser::mq_parse(array_tokens)
+  end
+end
+
+def bench_parse_dict_pattern_1024_repeated():
+  foreach (i, range(0, 4)):
+    parser::mq_parse(dict_tokens)
+  end
+end
+
+def bench_parse_array_pattern_64_repeated():
+  foreach (i, range(0, 199)):
+    parser::mq_parse(array_tokens_64)
+  end
+end
+
+def bench_parse_dict_pattern_64_repeated():
+  foreach (i, range(0, 199)):
+    parser::mq_parse(dict_tokens_64)
+  end
+end
+
+def bench_parse_array_pattern_512_repeated():
+  foreach (i, range(0, 19)):
+    parser::mq_parse(array_tokens_512)
+  end
+end
+
+def bench_parse_dict_pattern_512_repeated():
+  foreach (i, range(0, 19)):
+    parser::mq_parse(dict_tokens_512)
+  end
+end

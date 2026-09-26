@@ -10,8 +10,14 @@ import "lexer"
 | let _long_string_source = "\"" + join(map(range(0, 255), fn(i): "abcdefgh" end), "") + "\""
 | let _long_escaped_source = "\"" + join(map(range(0, 255), fn(i): "a\\nbcdef" end), "") + "\""
 | let _long_interp_source = "s\"" + join(map(range(0, 255), fn(i): "abcdefgh" end), "") + "\""
+| let _long_interp_expr_source = "s\"" + join(map(range(0, 255), fn(i): "abcdefgh" end), "") + "${1}\""
+| let _long_interp_expr_escape_source = "s\"${1}" + join(map(range(0, 255), fn(i): "abcdefgh" end), "") + "\\n\""
+| let _long_interp_many_escapes_source = "s\"" + join(map(range(0, 255), fn(i): "a\\nbcdef" end), "") + "\""
 | let _tokens = lexer::lex(_query)
 | let _ast = parser::mq_parse(_tokens)
+| let _long_ast = parser::mq_parse(lexer::lex(_long_query))
+| let _short_chain_ast = parser::mq_parse(lexer::lex("1 + 2 + 3"))
+| let _mid_chain_ast = parser::mq_parse(lexer::lex("1 + 2 + 3 + 4 + 5 + 6 + 7 + 8"))
 | let _lazy_ast = parser::mq_parse(lexer::lex("false && error(\"unreachable\")"))
 | let _fib_query = "def fib(n): if (n < 2): n else: fib(n - 1) + fib(n - 2) end | fib(20)"
 | let _fib_ast = parser::mq_parse(lexer::lex(_fib_query))
@@ -41,6 +47,24 @@ def bench_lex_long_interpolated_string():
   lexer::lex(_long_interp_source)
 end
 
+def bench_lex_long_interpolated_expression_repeated():
+  foreach (i, range(0, 19)):
+    lexer::lex(_long_interp_expr_source)
+  end
+end
+
+def bench_lex_long_interpolated_expression_escape_repeated():
+  foreach (i, range(0, 19)):
+    lexer::lex(_long_interp_expr_escape_source)
+  end
+end
+
+def bench_lex_long_interpolated_many_escapes_repeated():
+  foreach (i, range(0, 19)):
+    lexer::lex(_long_interp_many_escapes_source)
+  end
+end
+
 def bench_full_long_string():
   eval::mq_eval(parser::mq_parse(lexer::lex(_long_string_source)), None, {})[:val]
 end
@@ -51,6 +75,24 @@ end
 
 def bench_eval_arithmetic():
   eval::mq_eval(_ast, None, {})[:val]
+end
+
+def bench_eval_long_arithmetic_repeated():
+  foreach (i, range(0, 19)):
+    eval::mq_eval(_long_ast, None, {})[:val]
+  end
+end
+
+def bench_eval_short_chain_repeated():
+  foreach (i, range(0, 999)):
+    eval::mq_eval(_short_chain_ast, None, {})[:val]
+  end
+end
+
+def bench_eval_mid_chain_repeated():
+  foreach (i, range(0, 999)):
+    eval::mq_eval(_mid_chain_ast, None, {})[:val]
+  end
 end
 
 def bench_full_arithmetic():

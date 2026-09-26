@@ -12,6 +12,12 @@ def bench_parse_long_arithmetic():
   parser::mq_parse(long_tokens)
 end
 
+def bench_parse_long_arithmetic_repeated():
+  foreach (i, range(0, 19)):
+    parser::mq_parse(long_tokens)
+  end
+end
+
 def bench_lex_long_whitespace():
   lexer::lex(long_whitespace)
 end

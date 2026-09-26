@@ -23,3 +23,9 @@ end
 def bench_many_match_arms():
   eval::mq_eval(match_ast, None, {})[:val]
 end
+
+def bench_many_match_arms_repeated():
+  foreach (i, range(0, 99)):
+    eval::mq_eval(match_ast, None, {})[:val]
+  end
+end

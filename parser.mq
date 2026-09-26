@@ -159,12 +159,14 @@ end
 
 # ── let / var / assign ────────────────────────────────────────────────────────
 
-# Array pattern: [a, b] or [head, ..tail]
+# Array pattern: [a, b] or [head, ..tail]. Small patterns use the direct
+# loop; after roughly 256 comma-separated names, foreach collects the tail
+# without copying the growing names array for each binding.
 def _parse_array_pattern(toks, pos):
   var names = []
   | var rest = None
   | var cur = pos + 1
-  | while (!_at_v(toks, cur, "]") && !_at_eof(toks, cur)):
+  | while (!_at_v(toks, cur, "]") && !_at_eof(toks, cur) && cur < pos + 512):
       if (_at_op(toks, cur, "..")) do
           rest = _expect_t(toks, cur + 1, "ident")[:v]
           | cur = cur + 2
@@ -175,6 +177,23 @@ def _parse_array_pattern(toks, pos):
         end
       | cur = _skip_v(toks, cur, ",")
     end
+  | if (!_at_v(toks, cur, "]") && !_at_eof(toks, cur)) do
+      let tail = foreach (i, range(cur, _find_closer(toks, cur))):
+        if (i < cur): continue
+        elif (_at_v(toks, cur, "]") || _at_eof(toks, cur)): break
+        elif (_at_op(toks, cur, "..")) do
+          rest = _expect_t(toks, cur + 1, "ident")[:v]
+          | cur = _skip_v(toks, cur + 2, ",")
+          | continue
+        end
+        else do
+          let name = _expect_t(toks, cur, "ident")[:v]
+          | cur = _skip_v(toks, cur + 1, ",")
+          | name
+        end
+      end
+      | names = names + tail
+    end
   | {node: {kind: "arraypat", names: names, rest: rest}, pos: _expect_v(toks, cur, "]")}
 end
 
@@ -182,9 +201,21 @@ end
 def _parse_dict_pattern(toks, pos):
   var names = []
   | var cur = pos + 1
-  | while (!_at_v(toks, cur, "}") && !_at_eof(toks, cur)):
+  | while (!_at_v(toks, cur, "}") && !_at_eof(toks, cur) && cur < pos + 512):
       names += [_expect_t(toks, cur, "ident")[:v]]
       | cur = _skip_v(toks, cur + 1, ",")
+    end
+  | if (!_at_v(toks, cur, "}") && !_at_eof(toks, cur)) do
+      let tail = foreach (i, range(cur, _find_closer(toks, cur))):
+        if (i < cur): continue
+        elif (_at_v(toks, cur, "}") || _at_eof(toks, cur)): break
+        else do
+          let name = _expect_t(toks, cur, "ident")[:v]
+          | cur = _skip_v(toks, cur + 1, ",")
+          | name
+        end
+      end
+      | names = names + tail
     end
   | {node: {kind: "dictpat", names: names}, pos: _expect_v(toks, cur, "}")}
 end
@@ -498,7 +529,14 @@ def _parse_binary(toks, pos, min_prec):
       var node = first[:node]
       | var cur = first[:pos]
       | while (prec >= min_prec):
-          let rr = _parse_binary(toks, cur + 1, prec + 1)
+          let rhs = toks[cur + 1]
+          | let after_rhs = toks[cur + 2]
+          | let simple_number = rhs[:t] == "num" && after_rhs[:v] != "[" &&
+              !(after_rhs[:t] == "op" && after_rhs[:v] == "?") &&
+              _op_prec(after_rhs) < prec + 1
+          | let rr = if (simple_number):
+              {node: {kind: "num", val: to_number(rhs[:v])}, pos: cur + 2}
+            else: _parse_binary(toks, cur + 1, prec + 1)
           | node = {kind: "bin", op: toks[cur][:v], left: node, right: rr[:node]}
           | cur = rr[:pos]
           | prec = _op_prec(toks[cur])

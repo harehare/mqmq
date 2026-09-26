@@ -19,6 +19,11 @@ import "yaml"
   "none": true, "atom": true, "self": true, "dot": true, "nodes": true,
   "sel": true, "fn": true, "arr": true, "dict": true, "interp": true,
 }
+| let _HEADING_NAMES = {h1: true, h2: true, h3: true, h4: true, h5: true, h6: true}
+| let _NON_TEXT_NAMES = {
+  h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
+  code: true, list: true, html: true,
+}
 |
 
 # ── environment helpers ───────────────────────────────────────────────────────
@@ -34,29 +39,46 @@ def _ctrl(r):
 end
 
 ## Bind an array or dict destructuring pattern (see parser.mq's "arraypat" /
-## "dictpat" nodes) against a value, returning the updated env.
+## "dictpat" nodes) against a value, returning the updated env. Batch large
+## patterns; constructing the binding list costs more than set() for small ones.
 def _bind_pattern(pat, val, env):
   if (pat[:kind] == "arraypat") do
       let names = pat[:names]
-      | var e = env
-      | var i = 0
-      | while (i < len(names)):
-          e = _env_set(e, names[i], if (i < len(val)): val[i] else: None)
-          | i += 1
+      | if (len(names) >= 32) do
+          let bindings = map(range(0, len(names) - 1), fn(i):
+            [names[i], if (i < len(val)): val[i] else: None]
+          end)
+          | let with_rest = if (is_none(pat[:rest])): bindings
+              else: bindings + [[pat[:rest], if (len(names) < len(val)): val[len(names):len(val)] else: []]]
+          | dict(entries(env) + with_rest)
         end
-      | if (!is_none(pat[:rest])):
-          e = _env_set(e, pat[:rest], if (len(names) < len(val)): val[len(names):len(val)] else: [])
-      | e
+        else do
+          var e = env
+          | var i = 0
+          | while (i < len(names)):
+              e = _env_set(e, names[i], if (i < len(val)): val[i] else: None)
+              | i += 1
+            end
+          | if (!is_none(pat[:rest])):
+              e = _env_set(e, pat[:rest], if (len(names) < len(val)): val[len(names):len(val)] else: [])
+          | e
+        end
     end
   else do
       let names = pat[:names]
-      | var e = env
-      | var i = 0
-      | while (i < len(names)):
-          e = _env_set(e, names[i], val[names[i]])
-          | i += 1
+      | if (len(names) >= 32) do
+          let bindings = map(names, fn(name): [name, val[name]] end)
+          | dict(entries(env) + bindings)
         end
-      | e
+        else do
+          var e = env
+          | var i = 0
+          | while (i < len(names)):
+              e = _env_set(e, names[i], val[names[i]])
+              | i += 1
+            end
+          | e
+        end
     end
 end
 
@@ -120,9 +142,17 @@ def _try_match_arms(arms, matchval, value, env):
   | let n = len(arms)
   | while (i < n && is_none(result)):
       let arm = arms[i]
-      | let mr = _match_pattern(arm[:pattern], matchval, env)
-      | if (mr[:matched] && (is_none(arm[:guard]) || _ev(arm[:guard], value, mr[:env]))):
-          result = mq_eval(arm[:body], value, mr[:env])
+      | let pattern = arm[:pattern]
+      | if (pattern[:kind] == "litpat") do
+          if (matchval == _ev(pattern[:val], matchval, env) &&
+              (is_none(arm[:guard]) || _ev(arm[:guard], value, env))):
+            result = mq_eval(arm[:body], value, env)
+        end
+        else do
+          let mr = _match_pattern(pattern, matchval, env)
+          | if (mr[:matched] && (is_none(arm[:guard]) || _ev(arm[:guard], value, mr[:env]))):
+              result = mq_eval(arm[:body], value, mr[:env])
+        end
       | i += 1
     end
   | if (is_none(result)): error("No match arm matched") else: result
@@ -210,7 +240,7 @@ def _eval_sel(name, value):
     elif (name == "h4"): fn(node): is_h4(node) end
     elif (name == "h5"): fn(node): is_h5(node) end
     elif (name == "h6"): fn(node): is_h6(node) end
-    elif (name == "h"): fn(node): is_h(node) end
+    elif (name == "h"): fn(node): !is_none(_HEADING_NAMES[to_md_name(node)]) end
     elif (name == "code"): fn(node): is_code(node) end
     elif (name == "list" || name == "list_item"): fn(node): is_list(node) end
     elif (name == "table_cell"): fn(node): is_table_cell(node) end
@@ -220,7 +250,7 @@ def _eval_sel(name, value):
     elif (name == "thematic_break"): fn(node): to_md_name(node) == "Horizontal_rule" end
     elif (name == "html"): fn(node): is_html(node) end
     elif (name == "definition"): fn(node): to_md_name(node) == "definition" end
-    elif (name == "text"): fn(node): !is_h(node) && !is_code(node) && !is_list(node) && !is_html(node) end
+    elif (name == "text"): fn(node): is_none(_NON_TEXT_NAMES[to_md_name(node)]) end
     else: error("Unknown selector: ." + name)
   | if (is_array(value)):
       filter(value, pred)
@@ -461,19 +491,32 @@ end
 ## defaults may reference earlier params) or None if there is no default.
 def _call_user_fn(fn_val, args_vals, value, env):
   let params = fn_val[:params]
-  | var call_env = fn_val[:env]
-  | if (!is_none(fn_val[:name])):
-      call_env = _env_set(call_env, fn_val[:name], fn_val)
-  | var i = 0
-  | while (i < len(params)):
-      let p = params[i]
-      | let arg_val = if (i < len(args_vals)): args_vals[i]
-                      elif (!is_none(p[:default])): _ev(p[:default], value, call_env)
-                      else: None
-      | call_env = set(call_env, p[:name], arg_val)
-      | i += 1
+  | let count = len(params)
+  | if (count >= 8 && len(args_vals) >= count) do
+      # All parameters are supplied, so defaults cannot inspect earlier
+      # bindings. Build the call environment once instead of copying it for
+      # every parameter.
+      let self_entry = if (is_none(fn_val[:name])): [] else: [[fn_val[:name], fn_val]]
+      | let bindings = foreach (i, range(0, count - 1)):
+          [params[i][:name], args_vals[i]]
+        end
+      | _ev(fn_val[:body], value, dict(entries(fn_val[:env]) + self_entry + bindings))
     end
-  | _ev(fn_val[:body], value, call_env)
+    else do
+      var call_env = fn_val[:env]
+      | if (!is_none(fn_val[:name])):
+          call_env = _env_set(call_env, fn_val[:name], fn_val)
+      | var i = 0
+      | while (i < count):
+          let p = params[i]
+          | let arg_val = if (i < len(args_vals)): args_vals[i]
+                          elif (!is_none(p[:default])): _ev(p[:default], value, call_env)
+                          else: None
+          | call_env = set(call_env, p[:name], arg_val)
+          | i += 1
+        end
+      | _ev(fn_val[:body], value, call_env)
+    end
 end
 
 # ── conversion operator (@) ─────────────────────────────────────────────────
@@ -569,14 +612,26 @@ end
 def _ev_call(ast, value, env):
   let args = ast[:args]
   | let n = len(args)
-  | let args_vals = if (n == 0): []
-                    elif (n == 1): [_ev(args[0], value, env)]
-                    else: map(args, fn(a): _ev(a, value, env) end)
   | let named = env[ast[:name]]
-  | if (is_dict(named) && named[:kind] == "fn"):
-      _call_user_fn(named, args_vals, value, env)
-    else:
-      _eval_builtin(ast[:name], args_vals, value, env)
+  # A supplied single argument needs neither an argument array nor the
+  # general parameter/default binding loop. Keep the recursive name binding
+  # before the parameter binding so a parameter can shadow its own function.
+  | if (n == 1 && is_dict(named) && named[:kind] == "fn" && len(named[:params]) == 1) do
+      let arg_val = _ev(args[0], value, env)
+      | let fn_name = named[:name]
+      | let base_env = if (is_none(fn_name)): named[:env]
+                       else: set(named[:env], fn_name, named)
+      | _ev(named[:body], value, set(base_env, named[:params][0][:name], arg_val))
+    end
+    else do
+      let args_vals = if (n == 0): []
+                        elif (n == 1): [_ev(args[0], value, env)]
+                        else: map(args, fn(a): _ev(a, value, env) end)
+      | if (is_dict(named) && named[:kind] == "fn"):
+          _call_user_fn(named, args_vals, value, env)
+        else:
+          _eval_builtin(ast[:name], args_vals, value, env)
+    end
 end
 
 ## The right operand still sees any bindings the left operand made, as in
@@ -586,7 +641,12 @@ def _ev_bin(ast, value, env):
   | let op = ast[:op]
   | if (_KEEPS_ENV[left[:kind]]) do
       let lv = _ev(left, value, env)
-      | if (op == "&&" && !lv): false
+      # Common arithmetic/comparison operators can use the host operation
+      # directly; the remaining operators retain the shared dispatch below.
+      | if (op == "+"): lv + _ev(ast[:right], value, env)
+        elif (op == "-"): lv - _ev(ast[:right], value, env)
+        elif (op == "<"): lv < _ev(ast[:right], value, env)
+        elif (op == "&&" && !lv): false
         elif (op == "||" && lv): lv
         elif (op == "??" && !is_none(lv)): lv
         else: _eval_bin(op, lv, _ev(ast[:right], value, env))
@@ -646,6 +706,40 @@ def _eval_bin_node(ast, value, env):
     end
 end
 
+## Evaluate a left-associated binary chain without recursively evaluating
+## each intermediate bin node. Right operands still see earlier bindings.
+def _eval_bin_chain(ast, value, env):
+  var stages = None
+  | var cursor = ast
+  | while (cursor[:kind] == "bin"):
+      stages = {node: cursor, next: stages}
+      | cursor = cursor[:left]
+    end
+  | let first = _eval_keep_env(cursor, value, env)
+  | var acc = first[:val]
+  | var cur_env = first[:env]
+  | while (!is_none(stages)):
+      let stage = stages[:node]
+      | let op = stage[:op]
+      # A short-circuit leaves acc and cur_env unchanged.
+      | if (op == "&&" && !acc): acc = false
+        elif (op == "||" && acc): None
+        elif (op == "??" && !is_none(acc)): None
+        else do
+          let right = stage[:right]
+          | if (_KEEPS_ENV[right[:kind]]):
+              acc = _eval_bin(op, acc, _ev(right, value, cur_env))
+            else do
+              let rr = mq_eval(right, value, cur_env)
+              | acc = _eval_bin(op, acc, rr[:val])
+              | cur_env = rr[:env]
+            end
+        end
+      | stages = stages[:next]
+    end
+  | {val: acc, env: cur_env}
+end
+
 # ── main evaluator ────────────────────────────────────────────────────────────
 
 ## Evaluate an AST node, returning {val: <result>, env: <env>}.
@@ -660,7 +754,9 @@ def mq_eval(ast, value, env):
     end
     elif (k == "call"): {val: _ev_call(ast, value, env), env: env}
     elif (k == "bin"):
-      if (_KEEPS_ENV[ast[:left][:kind]] && _KEEPS_ENV[ast[:right][:kind]]):
+      if (ast[:left][:kind] == "bin" && ast[:left][:left][:kind] == "bin"):
+        _eval_bin_chain(ast, value, env)
+      elif (_KEEPS_ENV[ast[:left][:kind]] && _KEEPS_ENV[ast[:right][:kind]]):
         {val: _ev_bin(ast, value, env), env: env}
       else:
         _eval_bin_node(ast, value, env)
@@ -677,12 +773,24 @@ def mq_eval(ast, value, env):
             stages = {node: cursor[:right], next: stages}
             | cursor = cursor[:left]
           end
-        | var result = mq_eval(cursor, value, env)
-        | while (!is_none(stages) && _ctrl(result) == "none"):
-            result = mq_eval(stages[:node], result[:val], result[:env])
+        | let first = mq_eval(cursor, value, env)
+        | var result_val = first[:val]
+        | var result_env = first[:env]
+        | var signal = _ctrl(first)
+        | while (!is_none(stages) && signal == "none"):
+            let stage = stages[:node]
+            | if (_KEEPS_ENV[stage[:kind]]):
+                result_val = _ev(stage, result_val, result_env)
+              else do
+                let result = mq_eval(stage, result_val, result_env)
+                | result_val = result[:val]
+                | result_env = result[:env]
+                | signal = _ctrl(result)
+              end
             | stages = stages[:next]
           end
-        | result
+        | if (signal == "none"): {val: result_val, env: result_env}
+          else: {val: result_val, env: result_env, ctrl: signal}
       end
     end
     elif (k == "str"):   {val: ast[:val], env: env}
@@ -812,17 +920,12 @@ def mq_eval(ast, value, env):
     end
 
     elif (k == "dict") do
-      var d = {}
-      | var cur_env = env
-      | var i = 0
-      | while (i < len(ast[:pairs])):
-          let pair = ast[:pairs][i]
-          | let key_v = _ev(pair[:key], value, cur_env)
-          | let val_v = _ev(pair[:val], value, cur_env)
-          | d = set(d, key_v, val_v)
-          | i += 1
-        end
-      | {val: d, env: cur_env}
+      # Literal keys are strings. The host constructor inserts entries in
+      # order and replaces duplicate keys without copying the growing dict.
+      let entries = map(ast[:pairs], fn(pair):
+        [_ev(pair[:key], value, env), _ev(pair[:val], value, env)]
+      end)
+      | {val: dict(entries), env: env}
     end
 
     elif (k == "idx") do

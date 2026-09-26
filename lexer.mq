@@ -169,35 +169,39 @@ def _lex_interp_string(chars, i, n):
   | if (j >= n || chars[j] == "\""):
       {segs: if (j == i + 1): [] else: [{kind: "text", val: _slice(chars, i + 1, j)}], j: j + 1}
     else:
-      _lex_interp_string_complex(chars, i, n)
+      _lex_interp_string_chunks(chars, i, n, j)
 end
 
-def _lex_interp_string_complex(chars, i, n):
-  var j = i + 1
+# Accumulate text between escapes and interpolations as slices, then join each
+# text segment once. The initial scan has already found `first_special`.
+def _lex_interp_string_chunks(chars, i, n, first_special):
+  var j = first_special
+  | var start = i + 1
   | var segs = []
-  | var buf = ""
+  | var parts = []
   | while (j < n && chars[j] != "\""):
       if (chars[j] == "\\" && j + 1 < n) do
-          let esc = _lex_escape(chars, j + 1, n)
-          | buf += esc[:ch]
-          | j = esc[:j]
-        end
-      elif (chars[j] == "$" && j + 1 < n && chars[j + 1] == "{") do
-          if (!is_empty(buf)) do
-              segs += [{kind: "text", val: buf}]
-              | buf = ""
-            end
-          | let k = _scan_until_brace(chars, j + 2, n)
-          | segs += [{kind: "expr", val: _slice(chars, j + 2, k)}]
-          | j = k + 1
-        end
-      else do
-        buf += chars[j]
-        | j += 1
+        if (start < j): parts += [_slice(chars, start, j)]
+        | let esc = _lex_escape(chars, j + 1, n)
+        | parts += [esc[:ch]]
+        | j = esc[:j]
+        | start = j
       end
+      elif (chars[j] == "$" && j + 1 < n && chars[j + 1] == "{") do
+        if (start < j): parts += [_slice(chars, start, j)]
+        | if (!is_empty(parts)) do
+            segs += [{kind: "text", val: join(parts, "")}]
+            | parts = []
+          end
+        | let k = _scan_until_brace(chars, j + 2, n)
+        | segs += [{kind: "expr", val: _slice(chars, j + 2, k)}]
+        | j = k + 1
+        | start = j
+      end
+      else: j += 1
     end
-  | if (!is_empty(buf)):
-      segs += [{kind: "text", val: buf}]
+  | if (start < j): parts += [_slice(chars, start, j)]
+  | if (!is_empty(parts)): segs += [{kind: "text", val: join(parts, "")}]
   | {segs: segs, j: j + 1}
 end
 

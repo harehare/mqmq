@@ -1,0 +1,32 @@
+# Run with: mq-bench benchmarks_calls.mq --iterations 10 --warmup 2
+# Measures binding many supplied parameters against a captured environment.
+
+import "eval"
+| let captured = dict(map(range(0, 1023), fn(i): ["k" + to_string(i), i] end))
+| let params = map(range(0, 127), fn(i): {name: "p" + to_string(i), default: None} end)
+| let args = map(range(0, 127), fn(i): {kind: "num", val: i} end)
+| let fn_val = {kind: "fn", name: "f", params: params,
+    body: {kind: "ident", name: "p127"}, env: captured}
+| let call_ast = {kind: "call", name: "f", args: args}
+| let env = set(captured, "f", fn_val)
+| let small_fn = {kind: "fn", name: "small", params: params[0:8],
+    body: {kind: "ident", name: "p7"}, env: {}}
+| let small_call = {kind: "call", name: "small", args: args[0:8]}
+| let small_env = {small: small_fn}
+|
+
+def bench_call_128_params():
+  eval::mq_eval(call_ast, None, env)[:val]
+end
+
+def bench_call_128_params_repeated():
+  foreach (i, range(0, 9)):
+    eval::mq_eval(call_ast, None, env)[:val]
+  end
+end
+
+def bench_call_8_params_repeated():
+  foreach (i, range(0, 999)):
+    eval::mq_eval(small_call, None, small_env)[:val]
+  end
+end

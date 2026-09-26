@@ -11,3 +11,10 @@ import "lexer"
 def bench_pipe_2048():
   eval::mq_eval(ast, None, {})[:val]
 end
+
+# Repeat evaluation to make its cost visible beside import and AST setup.
+def bench_pipe_2048_repeated():
+  foreach (i, range(0, 19)):
+    eval::mq_eval(ast, None, {})[:val]
+  end
+end

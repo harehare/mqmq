@@ -39,6 +39,17 @@ def test_parse_binary_op(query, op):
   assert_eq(_parse(query)[:op], op)
 end
 
+def test_parse_numeric_rhs_keeps_precedence_and_postfix():
+  let chain = _parse("1 + 2 - 3")
+  | let precedence = _parse("1 + 2 * 3")
+  | let suppressed = _parse("1 + 2?")
+  | let indexed = _parse("1 + 2[0]")
+  | assert_eq(chain[:left][:op], "+")
+  | assert_eq(precedence[:right][:op], "*")
+  | assert_eq(suppressed[:right][:kind], "trysuppress")
+  | assert_eq(indexed[:right][:kind], "idx")
+end
+
 def test_parse_try_catch():
   let ast = _parse("try: 1 catch: 2")
   | assert_eq({kind: ast[:kind], body_kind: ast[:body][:kind], catch_kind: ast[:catch_body][:kind], catch_var: ast[:catch_var]},
@@ -95,6 +106,20 @@ def test_parse_let_dict_destructure():
   let ast = _parse("let {name, age} = obj")
   | assert_eq(ast[:kind], "let_destructure")
   | assert_eq(ast[:pattern], {kind: "dictpat", names: ["name", "age"]})
+end
+
+def test_parse_large_array_destructure_with_rest_after_threshold():
+  let names = map(range(0, 299), fn(i): "p" + to_string(i) end)
+  | let source = "let [" + join(names[0:260], ",") + ",..tail," +
+      join(names[260:len(names)], ",") + "] = xs"
+  | let pattern = _parse(source)[:pattern]
+  | assert_eq(pattern, {kind: "arraypat", names: names, rest: "tail"})
+end
+
+def test_parse_large_dict_destructure_with_trailing_comma():
+  let names = map(range(0, 299), fn(i): "p" + to_string(i) end)
+  | let pattern = _parse("let {" + join(names, ",") + ",} = xs")[:pattern]
+  | assert_eq(pattern, {kind: "dictpat", names: names})
 end
 
 def test_parse_match_arms():

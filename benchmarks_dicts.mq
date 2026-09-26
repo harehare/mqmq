@@ -1,0 +1,21 @@
+# Run with: mq-bench benchmarks_dicts.mq --iterations 10 --warmup 2
+# The AST is prepared at module load; repeat evaluation to expose the cost
+# of building a dictionary from evaluated key/value pairs.
+
+import "eval"
+| let pairs = map(range(0, 1023), fn(i):
+    {key: {kind: "str", val: "k" + to_string(i)},
+     val: {kind: "num", val: i}}
+  end)
+| let ast = {kind: "dict", pairs: pairs}
+|
+
+def bench_dict_1024():
+  eval::mq_eval(ast, None, {})[:val]
+end
+
+def bench_dict_1024_repeated():
+  foreach (i, range(0, 9)):
+    eval::mq_eval(ast, None, {})[:val]
+  end
+end

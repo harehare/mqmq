@@ -202,8 +202,19 @@ A few characteristics of the host `mq` runtime matter a lot for code written, li
 - **Build lookup tables once, at module load**, not per call (`lexer.mq`'s keyword set, `parser.mq`'s `_BIN_PREC`).
 - **Let the host regex engine split the query into lexemes in one call**, falling back to a char-by-char scanner only for cases it can't represent (interpolated strings, non-ASCII, multi-code-point graphemes).
 - **Dict/`set()` construction is expensive** — confirmed O(dict size) per `set()` call, so `n` sequential `set()`s cost O(n²). Minimize dict allocations and repeated `set()` calls in hot paths; `has()`/`keys()` are comparatively cheap.
-- **Walk long pipes iteratively**, not recursively. The evaluator flattens a left-associated `a | b | c` chain into a linked list first, avoiding deep call stacks.
+- **Build dictionary literals with `dict(entries)`** after evaluating their key/value pairs. This constructs the result in one pass instead of copying it with `set()` for every pair.
+- **Bind fully supplied functions in one pass** when they have many parameters. Missing arguments still bind one at a time so default expressions can read earlier parameters.
+- **Call single-parameter functions directly** when their argument is supplied. This avoids building an argument array and running the general binding loop for each recursive call.
+- **Bind large destructuring patterns in one pass.** Array and dictionary patterns with at least 32 names build one new environment instead of copying it for every name. Small patterns retain the direct binding path.
+- **Collect very long destructuring patterns with `foreach`.** After roughly 256 comma-separated names, the parser collects the remaining names without copying the growing array for each one.
+- **Compare literal match arms directly** so a long list of non-matching literals does not allocate a result dictionary for every arm.
+- **Classify `.h` and `.text` selectors with one Markdown-name lookup per node.** Their older predicates called several host helpers that each repeated the lookup.
+- **Walk long pipes iteratively**, not recursively. The evaluator flattens a left-associated `a | b | c` chain into a linked list first, avoiding deep call stacks. Stages that cannot change the environment use value-only evaluation, avoiding a result dictionary per stage.
+- **Walk longer binary chains iteratively** as well. This avoids a result dictionary and recursive evaluator call for each intermediate operator while preserving short-circuit behavior and bindings. Short expressions keep the simpler path.
+- **Evaluate common short binary operations directly** when the left operand keeps its environment. This removes an extra function call and operator dispatch for `+`, `-`, and `<`, including those inside recursive arithmetic.
 - **Bound a `foreach`-driving `range()` to its own span, not to end-of-file.** `range()` eagerly allocates, so sizing it as `range(cur, len(toks) - 1)` made parsing/lexing quadratic when a file had several lists/calls/dicts/escaped strings. `_find_closer` (parser.mq) and `_find_string_close` (lexer.mq) prescan for the real closing token instead.
+- **Read a standalone numeric right operand directly** in long binary expressions. Higher-precedence operators and postfix syntax still use the normal parser.
+- **Collect interpolated-string text in spans.** The lexer slices text between escapes and `${...}` expressions, then joins each segment once instead of appending every grapheme to a string.
 
 ## Running the Tests
 
@@ -221,7 +232,7 @@ mq-test
 
 ## Benchmarks
 
-`benchmarks.mq` exercises lexing, parsing, evaluation, and the full pipeline on the same 64-number arithmetic query, plus long strings, short-circuit, and recursive Fibonacci cases. The Fibonacci cases call `fib(20)` in native `mq` and `mqmq`. Run them with `mq-bench` from the [mq repository](https://github.com/harehare/mq):
+`benchmarks.mq` exercises lexing, parsing, evaluation, and the full pipeline on the same 64-number arithmetic query, plus a repeated 256-number evaluation, long strings (including interpolation and escapes), short-circuit, and recursive Fibonacci cases. The Fibonacci cases call `fib(20)` in native `mq` and `mqmq`. Run them with `mq-bench` from the [mq repository](https://github.com/harehare/mq):
 
 ```sh
 mq-bench benchmarks.mq --filter fibonacci_20 --iterations 1 --warmup 0
@@ -235,19 +246,19 @@ The interpreted `fib(20)` case is slow. Use `--filter arithmetic` or `--filter l
 mq-bench benchmarks_lists.mq --iterations 3 --warmup 1
 ```
 
-`benchmarks_selectors.mq` measures selector filtering over 1,024 headings:
+`benchmarks_selectors.mq` measures selector filtering over 1,024 headings, including repeated `.h` and `.text` filtering:
 
 ```sh
 mq-bench benchmarks_selectors.mq --iterations 3 --warmup 1
 ```
 
-`benchmarks_scanning.mq` covers a long arithmetic expression and a long whitespace run without changing the setup cost of `benchmarks.mq`:
+`benchmarks_scanning.mq` covers a long arithmetic expression (including repeated parsing) and a long whitespace run without changing the setup cost of `benchmarks.mq`:
 
 ```sh
 mq-bench benchmarks_scanning.mq --iterations 3 --warmup 1
 ```
 
-`benchmarks_branches.mq` measures evaluation of 512-way `elif` and `match` expressions:
+`benchmarks_branches.mq` measures evaluation of 512-way `elif` and `match` expressions, including repeated match evaluation:
 
 ```sh
 mq-bench benchmarks_branches.mq --iterations 3 --warmup 1
@@ -276,6 +287,36 @@ mq-bench benchmarks_reuse.mq --iterations 3 --warmup 1
 
 ```sh
 mq-bench benchmarks_pipes.mq --iterations 3 --warmup 1
+```
+
+`benchmarks_dicts.mq` measures evaluation of a 1,024-entry dictionary literal:
+
+```sh
+mq-bench benchmarks_dicts.mq --iterations 10 --warmup 2
+```
+
+`benchmarks_calls.mq` measures function calls with 8 and 128 supplied parameters:
+
+```sh
+mq-bench benchmarks_calls.mq --iterations 10 --warmup 2
+```
+
+`benchmarks_patterns.mq` measures array and dictionary destructuring with 8, 16, and 128 names:
+
+```sh
+mq-bench benchmarks_patterns.mq --iterations 10 --warmup 2
+```
+
+`benchmarks_parser_patterns.mq` measures parsing of 64, 512, and 1,024-name destructuring patterns:
+
+```sh
+mq-bench benchmarks_parser_patterns.mq --iterations 10 --warmup 2
+```
+
+`benchmarks_binary_ops.mq` measures repeated short `+`, `-`, `<`, and `==` evaluation:
+
+```sh
+mq-bench benchmarks_binary_ops.mq --iterations 10 --warmup 2
 ```
 
 Use `--format json --output baseline.json` to save a run, then `--baseline baseline.json` on a later run to compare timings. The runner compiles once, but executes imports and top-level setup on every iteration, so compare each benchmark against the same benchmark in a previous run. The reported times are not isolated stage timings.
