@@ -37,6 +37,12 @@ def test_eval_dict_literal_preserves_values_and_duplicate_keys():
   | assert_eq(keys(result), ["a", "b", "nested"])
 end
 
+def test_none_bound_identifier_is_a_value():
+  let ast = {kind: "ident", name: "x"}
+  | assert_eq(eval::mq_eval(ast, None, {x: None})[:val], None)
+  | assert_eq(_run("let x = None | x", None), None)
+end
+
 # -- literals / arithmetic / comparison / boolean --
 
 # @parametrize([
@@ -90,6 +96,19 @@ def test_foreach_identity_preserves_items_and_final_binding():
   | assert_eq(_run("foreach (x, [1, None]): . end", None), [1, None])
 end
 
+# @parametrize([
+#   ["foreach (x, [1, 2, 3]): x * 2 end", [2, 4, 6]],
+#   ["foreach (x, [1, 2, 3]): x + 2 end", [3, 4, 5]],
+#   ["foreach (x, [1, 2, 3]): x < 2 end", [true, false, false]],
+#   ["foreach (x, [None, 1]): x == 0 end", [false, false]],
+#   ["foreach (x, [1, 2, 3]): x * 2 end | x", 3],
+#   ["let x = 9 | foreach (x, []): x * 2 end | x", 9],
+#   ["let factor = 3 | foreach (x, [1, 2]): x * factor end", [3, 6]],
+# ])
+def test_foreach_literal_binary_body(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
 # -- break / continue --
 
 # @parametrize([
@@ -141,6 +160,13 @@ def test_eval_long_binary_chain():
   | assert_eq(_run(query, None), 512)
 end
 
+def test_eval_flat_binary_chain_preserves_bindings_and_short_circuit():
+  let with_binding = "1 + (let x = 2 | x) + 1 + 1 + 1 + 1 + 1 + 1 + x | x"
+  | let lazy = "true && true && true && true && true && true && true && true && false && error(\"unreachable\")"
+  | assert_eq(_run(with_binding, None), 2)
+  | assert_eq(_run(lazy, None), false)
+end
+
 def test_eval_long_pipe_stops_on_break():
   let steps = join(map(range(1, 64), fn(i): "x += 1" end), " | ")
   | assert_eq(_run("var x = 0 | " + steps + " | break x | error(\"unreachable\")", ""), 64)
@@ -157,6 +183,16 @@ def test_many_supplied_parameters_preserve_closure_and_shadowing():
   | assert_eq(_run("def f(a,b,c,d,e,g,h,i=error(\"unreachable\")): i end | f(1,2,3,4,5,6,7,8)", None), 8)
   | assert_eq(_run("def f(a,b,c,d,e,g,h,i=h+1): i end | f(1,2,3,4,5,6,7)", None), 8)
   | assert_eq(_run("def f(n,a,b,c,d,e,g,h): if (n == 0): h else: f(n-1,a,b,c,d,e,g,h+1) end | f(3,0,0,0,0,0,0,0)", None), 3)
+end
+
+def test_default_parameter_reads_batched_bindings_in_large_closure():
+  let captured = dict(map(range(0, 127), fn(i): ["k" + to_string(i), i] end))
+  | let params = map(range(0, 63), fn(i): {name: "p" + to_string(i), default: None} end) +
+      [{name: "last", default: {kind: "bin", op: "+", left: {kind: "ident", name: "p0"}, right: {kind: "ident", name: "p63"}}}]
+  | let fn_val = {kind: "fn", name: "sum", params: params, body: {kind: "ident", name: "last"}, env: captured}
+  | let args = map(range(0, 63), fn(i): {kind: "num", val: i} end)
+  | let call = {kind: "call", name: "sum", args: args}
+  | assert_eq(eval::mq_eval(call, None, {sum: fn_val})[:val], 63)
 end
 
 def test_one_argument_call_preserves_shadowing_defaults_and_closure():
@@ -404,11 +440,26 @@ end
 #   ["reduce([], fn(acc, x): acc + x end, 7)", "", 7],
 #   ["upper(\"hi\")", "", "HI"],
 #   ["lower(\"HI\")", "", "hi"],
+#   ["len([1,2,3])", "", 3],
+#   ["[1,2,3] | len()", "", 3],
+#   ["pow(2, 3)", "", 8],
 #   ["min([3,1,2])", "", 1],
 #   ["max([3,1,2])", "", 3],
 # ])
 def test_eval_builtin(query, md, expected):
   assert_eq(_run(query, md), expected)
+end
+
+# @parametrize([
+#   ["map([1,2,3], fn(x): x * 2 end)", [2, 4, 6]],
+#   ["filter([1,2,3], fn(x): x < 3 end)", [1, 2]],
+#   ["let x = 99 | map([1,2], fn(x): x + 2 end)", [3, 4]],
+#   ["filter([None, 1], fn(x): x == 0 end)", []],
+#   ["let offset = 2 | map([1,2], fn(x): x + offset end)", [3, 4]],
+#   ["let limit = 2 | filter([1,2,3], fn(x): x < limit end)", [1]],
+# ])
+def test_higher_order_literal_binary_body(query, expected):
+  assert_eq(_run(query, None), expected)
 end
 
 # -- coroutine / lazy stream builtins (forwarded straight to the host) --

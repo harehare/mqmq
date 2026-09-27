@@ -1,17 +1,28 @@
-# Run with: mq-bench benchmarks_pipes.mq --iterations 3 --warmup 1
-# Measures evaluation of a long, left-associated pipeline.
+# Run with: mq-bench bench/benchmarks_pipes.mq --iterations 3 --warmup 1
+# Measures parsing and evaluation of a long pipeline.
 
-import "lexer"
-| import "parser"
-| import "eval"
+import "../lexer" as lexer
+| import "../parser" as parser
+| import "../eval" as eval
 | let source = "1" + join(map(range(1, 2048), fn(i): " | ." end), "")
 | let ast = parser::mq_parse(lexer::lex(source))
 | let increment_source = "0" + join(map(range(1, 256), fn(i): " | . + 1" end), "")
 | let increment_ast = parser::mq_parse(lexer::lex(increment_source))
+| let pipe_tokens = lexer::lex(source)
 |
+
+def bench_parse_pipe_2048():
+  parser::mq_parse(pipe_tokens)
+end
 
 def bench_pipe_2048():
   eval::mq_eval(ast, None, {})[:val]
+end
+
+def bench_pipe_2048_repeated_100():
+  foreach (i, range(0, 99)):
+    eval::mq_eval(ast, None, {})[:val]
+  end
 end
 
 # Repeat evaluation to make its cost visible beside import and AST setup.

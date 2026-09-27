@@ -1,0 +1,22 @@
+# Run with: mq-bench bench/benchmarks_higher_order.mq --iterations 7 --warmup 2
+# Repeated map/filter calls over a prebuilt array, with simple function bodies.
+
+import "../eval" as eval
+| let items = range(0, 8191)
+| let param = [{name: "item", default: None}]
+| let item_ast = {kind: "ident", name: "item"}
+| let double_body = {kind: "bin", op: "*", left: item_ast, right: {kind: "num", val: 2}}
+| let less_body = {kind: "bin", op: "<", left: item_ast, right: {kind: "num", val: 4096}}
+| let double_fn = {kind: "fn", params: param, body: double_body}
+| let less_fn = {kind: "fn", params: param, body: less_body}
+| let map_ast = {kind: "call", name: "map", args: [{kind: "dot"}, double_fn]}
+| let filter_ast = {kind: "call", name: "filter", args: [{kind: "dot"}, less_fn]}
+|
+
+def bench_map_double_8192():
+  eval::mq_eval(map_ast, items, {})[:val]
+end
+
+def bench_filter_half_8192():
+  eval::mq_eval(filter_ast, items, {})[:val]
+end

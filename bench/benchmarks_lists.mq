@@ -1,8 +1,8 @@
-# Run with: mq-bench benchmarks_lists.mq --iterations 3 --warmup 1
+# Run with: mq-bench bench/benchmarks_lists.mq --iterations 3 --warmup 1
 # Compare the same case across revisions; imports and token generation run on
 # every iteration, so the reported times include shared setup.
 
-import "lexer" | import "parser"
+import "../lexer" as lexer | import "../parser" as parser
 | let nums_64 = join(map(range(0, 63), fn(i): to_string(i) end), ",")
 | let nums_256 = join(map(range(0, 255), fn(i): to_string(i) end), ",")
 | let nums_512 = join(map(range(0, 511), fn(i): to_string(i) end), ",")

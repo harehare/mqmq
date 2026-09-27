@@ -65,6 +65,18 @@ def test_parse_identifier_rhs_keeps_precedence_and_postfix():
   | assert_eq(suppressed[:right][:kind], "trysuppress")
 end
 
+def test_parse_flat_pipes_and_long_binary_chains():
+  let pipe = _parse("let x = 1 | x + 2 | . | x")
+  | assert_eq(pipe[:kind], "pipe")
+  | assert_eq(map(pipe[:stages], fn(stage): stage[:kind] end), ["let", "bin", "dot", "ident"])
+  | let chain = _parse("1 + 2 * 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10")
+  | assert_eq(chain[:kind], "bin_chain")
+  | assert_eq(chain[:first], {kind: "num", val: 1})
+  | assert_eq(len(chain[:stages]), 8)
+  | assert_eq(chain[:stages][0][:right][:op], "*")
+  | assert_eq(chain[:stages][7][:right][:val], 10)
+end
+
 def test_parse_try_catch():
   let ast = _parse("try: 1 catch: 2")
   | assert_eq({kind: ast[:kind], body_kind: ast[:body][:kind], catch_kind: ast[:catch_body][:kind], catch_var: ast[:catch_var]},

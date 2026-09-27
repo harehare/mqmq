@@ -1,7 +1,7 @@
-# Run with: mq-bench benchmarks_calls.mq --iterations 10 --warmup 2
+# Run with: mq-bench bench/benchmarks_calls.mq --iterations 10 --warmup 2
 # Measures binding many supplied parameters against a captured environment.
 
-import "eval"
+import "../eval" as eval
 | let captured = dict(map(range(0, 1023), fn(i): ["k" + to_string(i), i] end))
 | let params = map(range(0, 127), fn(i): {name: "p" + to_string(i), default: None} end)
 | let args = map(range(0, 127), fn(i): {kind: "num", val: i} end)
@@ -18,6 +18,11 @@ import "eval"
     body: {kind: "ident", name: "p7"}, env: {}}
 | let default_call = {kind: "call", name: "with_default", args: args[0:7]}
 | let default_env = {with_default: default_fn}
+| let captured_default_params = params[0:127] + [{name: "p127", default: {kind: "ident", name: "p126"}}]
+| let captured_default_fn = {kind: "fn", name: "with_default", params: captured_default_params,
+    body: {kind: "ident", name: "p127"}, env: captured}
+| let captured_default_call = {kind: "call", name: "with_default", args: args[0:127]}
+| let captured_default_env = set(captured, "with_default", captured_default_fn)
 |
 
 def bench_call_128_params():
@@ -39,5 +44,11 @@ end
 def bench_call_missing_default_repeated():
   foreach (i, range(0, 9999)):
     eval::mq_eval(default_call, None, default_env)[:val]
+  end
+end
+
+def bench_call_large_env_missing_default_repeated():
+  foreach (i, range(0, 99)):
+    eval::mq_eval(captured_default_call, None, captured_default_env)[:val]
   end
 end

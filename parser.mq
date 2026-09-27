@@ -5,7 +5,7 @@
 # Output: AST as nested dicts
 #
 # AST node kinds:
-#   pipe   {kind:"pipe",   left, right}
+#   pipe   {kind:"pipe",   stages:[expr, ...]}
 #   sel    {kind:"sel",    name}            - .h1
 #   dot    {kind:"dot"}                     - . (identity)
 #   call   {kind:"call",   name, args}
@@ -21,6 +21,7 @@
 #   def    {kind:"def",    name, params, body}
 #   fn     {kind:"fn",     params, body}
 #   bin    {kind:"bin",    op, left, right}
+#   bin_chain {kind:"bin_chain", first, stages:[{op, right}, ...]}
 #   un     {kind:"un",     op, expr}
 #   arr    {kind:"arr",    items}
 #   dict   {kind:"dict",   pairs:[{key,val}]}
@@ -129,14 +130,32 @@ end
 
 def _parse_pipe_list(toks, pos):
   let first_r = _parse_stmt(toks, pos)
-  | var node = first_r[:node]
-  | var cur  = first_r[:pos]
-  | while (_at_op(toks, cur, "|")):
-      let rr = _parse_stmt(toks, cur + 1)
-      | node = {kind: "pipe", left: node, right: rr[:node]}
-      | cur = rr[:pos]
+  | let cur = first_r[:pos]
+  | if (!_at_op(toks, cur, "|")): first_r
+    else do
+      let second_r = _parse_stmt(toks, cur + 1)
+      | var next = second_r[:pos]
+      | if (!_at_op(toks, next, "|")):
+          {node: {kind: "pipe", stages: [first_r[:node], second_r[:node]]}, pos: next}
+        else do
+          # Cons links keep parsing linear for long pipes. Materialize the
+          # stage array once, so repeated evaluation can index it directly.
+          var reversed = [second_r[:node], [first_r[:node], None]]
+          | var count = 2
+          | while (_at_op(toks, next, "|")):
+              let rr = _parse_stmt(toks, next + 1)
+              | reversed = [rr[:node], reversed]
+              | count += 1
+              | next = rr[:pos]
+            end
+          | let stages = reverse(foreach (i, range(0, count - 1)):
+              let stage = reversed[0]
+              | reversed = reversed[1]
+              | stage
+            end)
+          | {node: {kind: "pipe", stages: stages}, pos: next}
+        end
     end
-  | {node: node, pos: cur}
 end
 
 # ── statement dispatch ────────────────────────────────────────────────────────
@@ -538,6 +557,10 @@ def _parse_binary(toks, pos, min_prec):
     else do
       var node = first[:node]
       | var cur = first[:pos]
+      | var count = 0
+      | var flat_first = None
+      | var prefix = None
+      | var tail = None
       | while (prec >= min_prec):
           let rhs = toks[cur + 1]
           | let after_rhs = toks[cur + 2]
@@ -553,12 +576,51 @@ def _parse_binary(toks, pos, min_prec):
                 _op_prec(after_rhs) < prec + 1):
               {node: {kind: "ident", name: rhs[:v]}, pos: cur + 2}
             else: _parse_binary(toks, cur + 1, prec + 1)
-          | node = {kind: "bin", op: toks[cur][:v], left: node, right: rr[:node]}
+          | let op = toks[cur][:v]
+          | if (count < 7):
+              node = {kind: "bin", op: op, left: node, right: rr[:node]}
+            elif (count == 7) do
+              let flat = _flatten_bin_chain(node, 7)
+              | flat_first = flat[:first]
+              | prefix = flat[:stages]
+              | tail = [{op: op, right: rr[:node]}, None]
+            end
+            else:
+              tail = [{op: op, right: rr[:node]}, tail]
+          | count += 1
           | cur = rr[:pos]
           | prec = if (simple_number): after_prec else: _op_prec(toks[cur])
         end
-      | {node: node, pos: cur}
+      | if (count < 8): {node: node, pos: cur}
+        else do
+          let rest = reverse(foreach (j, range(0, count - 8)):
+            let stage = tail[0]
+            | tail = tail[1]
+            | stage
+          end)
+          | {node: {kind: "bin_chain", first: flat_first, stages: prefix + rest}, pos: cur}
+        end
     end
+end
+
+## Keep small expressions as ordinary bin nodes. A longer left-associated
+## chain is flattened once so the evaluator need not rebuild its traversal
+## stack each time a compiled AST is used.
+def _flatten_bin_chain(node, count):
+  var cursor = node
+  | var reversed = None
+  | var i = 0
+  | while (i < count):
+      reversed = [{op: cursor[:op], right: cursor[:right]}, reversed]
+      | cursor = cursor[:left]
+      | i += 1
+    end
+  | let stages = foreach (j, range(0, count - 1)):
+      let stage = reversed[0]
+      | reversed = reversed[1]
+      | stage
+    end
+  | {kind: "bin_chain", first: cursor, stages: stages}
 end
 
 ## Binding power of a binary operator token, or 0 for any other token.
