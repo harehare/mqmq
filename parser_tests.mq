@@ -77,6 +77,27 @@ def test_parse_flat_pipes_and_long_binary_chains():
   | assert_eq(chain[:stages][7][:right][:val], 10)
 end
 
+def test_parse_long_parameter_and_branch_lists_keep_order():
+  let names = join(map(range(0, 39), fn(i): "p" + to_string(i) end), ",")
+  | let params = _parse("def f(" + names + "): p0 end")[:params]
+  | assert_eq(len(params), 40)
+  | assert_eq(params[0][:name], "p0")
+  | assert_eq(params[31][:name], "p31")
+  | assert_eq(params[39][:name], "p39")
+  | let elifs = join(map(range(0, 39), fn(i): " elif (false): " + to_string(i) end), "")
+  | let branches = _parse("if (false): 0" + elifs + " else: 999")[:elifs]
+  | assert_eq(len(branches), 40)
+  | assert_eq(branches[0][:body][:val], 0)
+  | assert_eq(branches[31][:body][:val], 31)
+  | assert_eq(branches[39][:body][:val], 39)
+  | let arms_source = join(map(range(0, 39), fn(i): " | " + to_string(i) + ": " + to_string(i) end), "")
+  | let arms = _parse("match (0):" + arms_source + " end")[:arms]
+  | assert_eq(len(arms), 40)
+  | assert_eq(arms[0][:body][:val], 0)
+  | assert_eq(arms[31][:body][:val], 31)
+  | assert_eq(arms[39][:body][:val], 39)
+end
+
 def test_parse_try_catch():
   let ast = _parse("try: 1 catch: 2")
   | assert_eq({kind: ast[:kind], body_kind: ast[:body][:kind], catch_kind: ast[:catch_body][:kind], catch_var: ast[:catch_var]},

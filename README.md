@@ -46,14 +46,31 @@ git clone https://github.com/harehare/mqmq.git
 mq -L mqmq 'include "mqmq" | nodes | mqmq("<mq-query>")' <markdown-files...>
 ```
 
-When applying the same query to multiple values, compile it once and reuse its
-AST. `mqmq_eval_ast` accepts the same value and environment as `mqmq_with`:
+When applying the same query to multiple values, compile it once and reuse its AST. `mqmq_eval_ast` accepts the same value and environment as `mqmq_with`:
 
 ```sh
 mq -I null -L mqmq \
   'include "mqmq" | let ast = mqmq_compile("x + .") | [mqmq_eval_ast(ast, 2, {x: 1}), mqmq_eval_ast(ast, 3, {x: 2})]'
 # => [3, 5]
 ```
+
+### Compile with mq
+
+From the directory containing the `mqmq` checkout, compile an mq program that accepts the mqmq query at run time:
+
+```sh
+mq compile -L mqmq \
+  'include "mqmq" | nodes | mqmq(query)' \
+  -o mqmq.mqc
+
+printf '# Hello\n\n## World\n' | mq mqmq.mqc --args query '.h1'
+# => # Hello
+
+# Reuse the same compiled program with a Markdown file:
+mq mqmq.mqc --args query '.h2' notes.md
+```
+
+The compiled program contains the imported `mqmq` modules, so running the `.mqc` file does not need `-L mqmq`. `mq compile` compiles the outer mq program; `mqmq(query)` still parses the supplied query when it runs. For repeated evaluation of the same query within one run, use `mqmq_compile` and `mqmq_eval_ast` as shown above. Recompile after changing the outer query or the mqmq source files. The `.mqc` format is experimental; recompile after upgrading mq.
 
 ## Examples
 
@@ -293,8 +310,7 @@ mq-bench bench/benchmarks_collections.mq --iterations 3 --warmup 1
 mq-bench bench/benchmarks_higher_order.mq --iterations 7 --warmup 2
 ```
 
-`bench/benchmarks_reuse.mq` compares repeated parsing with explicit reuse of a
-compiled query:
+`bench/benchmarks_reuse.mq` compares repeated parsing with explicit reuse of a compiled query:
 
 ```sh
 mq-bench bench/benchmarks_reuse.mq --iterations 3 --warmup 1
@@ -312,8 +328,7 @@ mq-bench bench/benchmarks_pipes.mq --iterations 3 --warmup 1
 mq-bench bench/benchmarks_dicts.mq --iterations 10 --warmup 2
 ```
 
-It also measures arrays and dictionaries nested inside an array. `bench/benchmarks_loops.mq`
-compares 1,000-iteration `while` and `until` loops:
+It also measures arrays and dictionaries nested inside an array. `bench/benchmarks_loops.mq` compares 1,000-iteration `while` and `until` loops:
 
 ```sh
 mq-bench bench/benchmarks_loops.mq --iterations 10 --warmup 2

@@ -119,6 +119,16 @@ def _is_assign_op(v):
   v == "=" || v == "+=" || v == "-=" || v == "*=" || v == "/=" || v == "|=" || v == "%=" || v == "//="
 end
 
+## Append a reversed linked tail after a small array prefix. Large parser
+## lists avoid copying their growing array on every item.
+def _finish_list(prefix, tail, count):
+  prefix + reverse(foreach (i, range(0, count - 1)):
+    let item = tail[0]
+    | tail = tail[1]
+    | item
+  end)
+end
+
 # ── public entry point ────────────────────────────────────────────────────────
 
 ## Parse a token list produced by lex() and return the root AST node.
@@ -297,6 +307,8 @@ end
 
 def _parse_params(toks, pos):
   var params = []
+  | var tail = None
+  | var tail_count = 0
   | var cur = pos
   | while (!_at_v(toks, cur, ")") && !_at_eof(toks, cur)):
       let name = _expect_t(toks, cur, "ident")[:v]
@@ -307,10 +319,15 @@ def _parse_params(toks, pos):
           | default_node = sv[:node]
           | cur = sv[:pos]
         end
-      | params += [{name: name, default: default_node}]
+      | let param = {name: name, default: default_node}
+      | if (len(params) < 32): params += [param]
+        else do
+          tail = [param, tail]
+          | tail_count += 1
+        end
       | cur = _skip_v(toks, cur, ",")
     end
-  | {params: params, pos: cur}
+  | {params: if (tail_count == 0): params else: _finish_list(params, tail, tail_count), pos: cur}
 end
 
 # ── if / elif / else ──────────────────────────────────────────────────────────
@@ -326,15 +343,22 @@ def _parse_if(toks, pos):
   let cr = _parse_cond(toks, pos + 1)
   | let tr = _parse_if_body(toks, cr[:pos])
   | var elifs = []
+  | var tail = None
+  | var tail_count = 0
   | var cur = tr[:pos]
   | while (_at_v(toks, cur, "elif")):
       let ec = _parse_cond(toks, cur + 1)
       | let eb = _parse_if_body(toks, ec[:pos])
-      | elifs += [{cond: ec[:node], body: eb[:node]}]
+      | let branch = {cond: ec[:node], body: eb[:node]}
+      | if (len(elifs) < 32): elifs += [branch]
+        else do
+          tail = [branch, tail]
+          | tail_count += 1
+        end
       | cur = eb[:pos]
     end
   | let else_res = _parse_opt_else(toks, cur)
-  | {node: {kind: "if", cond: cr[:node], then: tr[:node], elifs: elifs, else_br: else_res[:node]}, pos: else_res[:pos]}
+  | {node: {kind: "if", cond: cr[:node], then: tr[:node], elifs: if (tail_count == 0): elifs else: _finish_list(elifs, tail, tail_count), else_br: else_res[:node]}, pos: else_res[:pos]}
 end
 
 def _parse_opt_else(toks, cur):
@@ -452,6 +476,8 @@ end
 
 def _parse_match_arms(toks, pos):
   var arms = []
+  | var tail = None
+  | var tail_count = 0
   | var cur = pos
   | while (_at_op(toks, cur, "|")):
       let pr = _parse_match_pattern(toks, cur + 1)
@@ -461,10 +487,15 @@ def _parse_match_arms(toks, pos):
                    end
                    else: {guard: None, pos: pr[:pos]}
       | let br = _parse_if_body(toks, _expect_v(toks, gr[:pos], ":"))
-      | arms += [{pattern: pr[:node], guard: gr[:guard], body: br[:node]}]
+      | let arm = {pattern: pr[:node], guard: gr[:guard], body: br[:node]}
+      | if (len(arms) < 32): arms += [arm]
+        else do
+          tail = [arm, tail]
+          | tail_count += 1
+        end
       | cur = br[:pos]
     end
-  | {arms: arms, pos: cur}
+  | {arms: if (tail_count == 0): arms else: _finish_list(arms, tail, tail_count), pos: cur}
 end
 
 # Or-pattern: p1 || p2 || p3
