@@ -1,7 +1,7 @@
-# Run with: mq-bench bench/benchmarks_patterns.mq --iterations 10 --warmup 2
+# Run with: mq-bench benchmarks_patterns.mq --iterations 10 --warmup 2
 # Large destructuring patterns against a populated environment.
 
-import "../eval" as eval
+import "eval" as eval
 | let env = dict(map(range(0, 1023), fn(i): ["old" + to_string(i), i] end))
 | let names = map(range(0, 127), fn(i): "p" + to_string(i) end)
 | let values = range(0, 127)

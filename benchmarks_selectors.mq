@@ -1,8 +1,8 @@
-# Run with: mq-bench bench/benchmarks_selectors.mq --iterations 3 --warmup 1
+# Run with: mq-bench benchmarks_selectors.mq --iterations 3 --warmup 1
 # The runner includes module setup in each iteration. Compare each case with
 # the same case on another revision.
 
-import "../eval" as eval
+import "eval" as eval
 | let headings = map(range(0, 1023), fn(i): to_h("heading", 1) end)
 | let h_ast = {kind: "sel", name: "h"}
 | let h6_ast = {kind: "sel", name: "h6"}

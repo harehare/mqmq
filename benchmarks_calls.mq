@@ -1,7 +1,7 @@
-# Run with: mq-bench bench/benchmarks_calls.mq --iterations 10 --warmup 2
+# Run with: mq-bench benchmarks_calls.mq --iterations 10 --warmup 2
 # Measures binding many supplied parameters against a captured environment.
 
-import "../eval" as eval
+import "eval" as eval
 | let captured = dict(map(range(0, 1023), fn(i): ["k" + to_string(i), i] end))
 | let params = map(range(0, 127), fn(i): {name: "p" + to_string(i), default: None} end)
 | let args = map(range(0, 127), fn(i): {kind: "num", val: i} end)

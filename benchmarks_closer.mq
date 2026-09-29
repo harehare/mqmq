@@ -1,7 +1,7 @@
-# Run with: mq-bench bench/benchmarks_closer.mq --iterations 10 --warmup 2
+# Run with: mq-bench benchmarks_closer.mq --iterations 10 --warmup 2
 # Parse pretokenized lists repeatedly so setup does not dominate the result.
 
-import "../lexer" as lexer | import "../parser" as parser
+import "lexer" as lexer | import "parser" as parser
 | let nums_64 = join(map(range(0, 63), fn(i): to_string(i) end), ",")
 | let nums_2048 = join(map(range(0, 2047), fn(i): to_string(i) end), ",")
 | let array_64 = lexer::lex("[" + nums_64 + "]")

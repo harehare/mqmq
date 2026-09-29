@@ -1,7 +1,7 @@
-# Run with: mq-bench bench/benchmarks_builtins.mq --iterations 10 --warmup 2
+# Run with: mq-bench benchmarks_builtins.mq --iterations 10 --warmup 2
 # Repeated calls isolate the shared builtin argument dispatch.
 
-import "../eval" as eval
+import "eval" as eval
 | let values = range(0, 15)
 | let env = {values: values}
 | let len_ast = {kind: "call", name: "len", args: [{kind: "ident", name: "values"}]}

@@ -1,7 +1,7 @@
-# Run with: mq-bench bench/benchmarks_binary_ops.mq --iterations 10 --warmup 2
+# Run with: mq-bench benchmarks_binary_ops.mq --iterations 10 --warmup 2
 # Short value-only operators exercised inside recursive expressions.
 
-import "../eval" as eval
+import "eval" as eval
 | let left = {kind: "ident", name: "n"}
 | let right = {kind: "num", val: 1}
 | let add_ast = {kind: "bin", op: "+", left: left, right: right}

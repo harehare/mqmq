@@ -1,10 +1,10 @@
-# Run with: mq-bench bench/benchmarks.mq --filter fibonacci_20 --iterations 1 --warmup 0
+# Run with: mq-bench benchmarks.mq --filter fibonacci_20 --iterations 1 --warmup 0
 # Each run also executes this file's imports and setup before calling the
 # selected function. Compare the same benchmark across code revisions.
 
-import "../lexer" as lexer
-| import "../parser" as parser
-| import "../eval" as eval
+import "lexer" as lexer
+| import "parser" as parser
+| import "eval" as eval
 | let _query = join(map(range(1, 64), fn(i): to_string(i) end), " + ")
 | let _long_query = join(map(range(1, 256), fn(i): to_string(i) end), " + ")
 | let _long_string_source = "\"" + join(map(range(0, 255), fn(i): "abcdefgh" end), "") + "\""

@@ -1,7 +1,7 @@
-# Run with: mq-bench bench/benchmarks_reuse.mq --iterations 3 --warmup 1
+# Run with: mq-bench benchmarks_reuse.mq --iterations 3 --warmup 1
 # Compare repeated parsing with explicit reuse of a compiled query.
 
-import "../mqmq" as mqmq
+import "mqmq" as mqmq
 | let source = join(map(range(1, 63), fn(i): to_string(i) end), " + ")
 | let ast = mqmq::mqmq_compile(source)
 |
