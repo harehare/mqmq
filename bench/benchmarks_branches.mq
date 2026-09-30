@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_branches.mq --iterations 3 --warmup 1
+# Run with: mq-bench bench/benchmarks_branches.mq --iterations 3 --warmup 1
 # The 512-way cases expose the cost of walking long elif and match lists.
 
 import "eval" as eval

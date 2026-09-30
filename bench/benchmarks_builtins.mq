@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_builtins.mq --iterations 10 --warmup 2
+# Run with: mq-bench bench/benchmarks_builtins.mq --iterations 10 --warmup 2
 # Repeated calls isolate the shared builtin argument dispatch.
 
 import "eval" as eval

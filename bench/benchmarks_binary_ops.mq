@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_binary_ops.mq --iterations 10 --warmup 2
+# Run with: mq-bench bench/benchmarks_binary_ops.mq --iterations 10 --warmup 2
 # Short value-only operators exercised inside recursive expressions.
 
 import "eval" as eval

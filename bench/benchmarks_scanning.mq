@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_scanning.mq --iterations 3 --warmup 1
+# Run with: mq-bench bench/benchmarks_scanning.mq --iterations 3 --warmup 1
 # Setup runs on every iteration. Compare the same case across revisions.
 
 import "lexer" as lexer

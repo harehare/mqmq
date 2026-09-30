@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_selectors.mq --iterations 3 --warmup 1
+# Run with: mq-bench bench/benchmarks_selectors.mq --iterations 3 --warmup 1
 # The runner includes module setup in each iteration. Compare each case with
 # the same case on another revision.
 

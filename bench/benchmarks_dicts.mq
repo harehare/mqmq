@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_dicts.mq --iterations 10 --warmup 2
+# Run with: mq-bench bench/benchmarks_dicts.mq --iterations 10 --warmup 2
 # The AST is prepared at module load; repeat evaluation to expose the cost
 # of building a dictionary from evaluated key/value pairs.
 
