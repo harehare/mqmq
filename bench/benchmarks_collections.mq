@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_collections.mq --iterations 3 --warmup 1
+# Run with: mq-bench bench/benchmarks_collections.mq --iterations 3 --warmup 1
 # Measures interpreted foreach over a prebuilt collection.
 
 import "eval" as eval

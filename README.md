@@ -260,10 +260,10 @@ mq-test
 
 ## Benchmarks
 
-`benchmarks.mq` exercises lexing, parsing, evaluation, and the full pipeline on the same 64-number arithmetic query, plus a repeated 256-number evaluation, long strings (including interpolation and escapes), short-circuit, and recursive Fibonacci cases. The Fibonacci cases call `fib(20)` in native `mq` and `mqmq`. Run them with `mq-bench` from the [mq repository](https://github.com/harehare/mq):
+`benchmarks.mq` exercises lexing, parsing, evaluation, and the full pipeline on the same 64-number arithmetic query, plus a repeated 256-number evaluation, long strings (including interpolation and escapes), short-circuit, and recursive Fibonacci cases. The Fibonacci cases call `fib(20)` in native `mq` and `mqmq`. Benchmarks live in `bench/`. Run them with `mq-bench` from the [mq repository](https://github.com/harehare/mq), from the repository root (the current directory is searched for `import "lexer"` etc.; this needs an `mq-bench` that supports it):
 
 ```sh
-mq-bench benchmarks.mq --filter fibonacci_20 --iterations 1 --warmup 0
+mq-bench bench/benchmarks.mq --filter fibonacci_20 --iterations 1 --warmup 0
 ```
 
 The interpreted `fib(20)` case is slow. Use `--filter arithmetic` or `--filter long_string` for quicker pipeline runs with more iterations.
@@ -271,97 +271,97 @@ The interpreted `fib(20)` case is slow. Use `--filter arithmetic` or `--filter l
 `benchmarks_lists.mq` measures parsing of larger arrays, call arguments, and dictionaries, including 2,048-element cases. Run it separately so its token generation doesn't add setup time to the Fibonacci results:
 
 ```sh
-mq-bench benchmarks_lists.mq --iterations 3 --warmup 1
+mq-bench bench/benchmarks_lists.mq --iterations 3 --warmup 1
 ```
 
 `benchmarks_selectors.mq` measures selector filtering over 1,024 headings, including repeated `.h` and `.text` filtering:
 
 ```sh
-mq-bench benchmarks_selectors.mq --iterations 3 --warmup 1
+mq-bench bench/benchmarks_selectors.mq --iterations 3 --warmup 1
 ```
 
 `benchmarks_scanning.mq` covers long numeric and identifier expressions (including repeated parsing) and a long whitespace run without changing the setup cost of `benchmarks.mq`:
 
 ```sh
-mq-bench benchmarks_scanning.mq --iterations 3 --warmup 1
+mq-bench bench/benchmarks_scanning.mq --iterations 3 --warmup 1
 ```
 
 `benchmarks_branches.mq` measures evaluation of 512-way `elif` and `match` expressions, including repeated match evaluation:
 
 ```sh
-mq-bench benchmarks_branches.mq --iterations 3 --warmup 1
+mq-bench bench/benchmarks_branches.mq --iterations 3 --warmup 1
 ```
 
 `benchmarks_modules.mq` measures namespace creation when the environment already contains 1,024 bindings:
 
 ```sh
-mq-bench benchmarks_modules.mq --iterations 3 --warmup 1
+mq-bench bench/benchmarks_modules.mq --iterations 3 --warmup 1
 ```
 
 `benchmarks_collections.mq` measures identity and transforming `foreach` bodies over 8,192 items:
 
 ```sh
-mq-bench benchmarks_collections.mq --iterations 3 --warmup 1
+mq-bench bench/benchmarks_collections.mq --iterations 3 --warmup 1
 ```
 
 `benchmarks_higher_order.mq` measures `map` and `filter` with simple numeric function bodies over 8,192 items:
 
 ```sh
-mq-bench benchmarks_higher_order.mq --iterations 7 --warmup 2
+mq-bench bench/benchmarks_higher_order.mq --iterations 7 --warmup 2
 ```
 
 `benchmarks_reuse.mq` compares repeated parsing with explicit reuse of a compiled query:
 
 ```sh
-mq-bench benchmarks_reuse.mq --iterations 3 --warmup 1
+mq-bench bench/benchmarks_reuse.mq --iterations 3 --warmup 1
 ```
 
 `benchmarks_pipes.mq` measures parsing and evaluation of a 2,048-stage pipeline, including repeated evaluation of one compiled AST:
 
 ```sh
-mq-bench benchmarks_pipes.mq --iterations 3 --warmup 1
+mq-bench bench/benchmarks_pipes.mq --iterations 3 --warmup 1
 ```
 
 `benchmarks_dicts.mq` measures evaluation of a 1,024-entry dictionary literal:
 
 ```sh
-mq-bench benchmarks_dicts.mq --iterations 10 --warmup 2
+mq-bench bench/benchmarks_dicts.mq --iterations 10 --warmup 2
 ```
 
 It also measures arrays and dictionaries nested inside an array. `benchmarks_loops.mq` compares 1,000-iteration `while` and `until` loops:
 
 ```sh
-mq-bench benchmarks_loops.mq --iterations 10 --warmup 2
+mq-bench bench/benchmarks_loops.mq --iterations 10 --warmup 2
 ```
 
 `benchmarks_calls.mq` measures function calls with 8 and 128 supplied parameters, plus calls with a missing defaulted parameter:
 
 ```sh
-mq-bench benchmarks_calls.mq --iterations 10 --warmup 2
+mq-bench bench/benchmarks_calls.mq --iterations 10 --warmup 2
 ```
 
 `benchmarks_builtins.mq` measures repeated calls through the shared builtin dispatcher:
 
 ```sh
-mq-bench benchmarks_builtins.mq --iterations 10 --warmup 2
+mq-bench bench/benchmarks_builtins.mq --iterations 10 --warmup 2
 ```
 
 `benchmarks_patterns.mq` measures array and dictionary destructuring with 8, 16, and 128 names:
 
 ```sh
-mq-bench benchmarks_patterns.mq --iterations 10 --warmup 2
+mq-bench bench/benchmarks_patterns.mq --iterations 10 --warmup 2
 ```
 
 `benchmarks_parser_patterns.mq` measures parsing of 64, 512, and 1,024-name destructuring patterns:
 
 ```sh
-mq-bench benchmarks_parser_patterns.mq --iterations 10 --warmup 2
+mq-bench bench/benchmarks_parser_patterns.mq --iterations 10 --warmup 2
 ```
 
 `benchmarks_binary_ops.mq` measures repeated short `+`, `-`, `<`, and `==` evaluation:
 
 ```sh
-mq-bench benchmarks_binary_ops.mq --iterations 10 --warmup 2
+mq-bench bench/benchmarks_binary_ops.mq --iterations 10 --warmup 2
 ```
 
 Use `--format json --output baseline.json` to save a run, then `--baseline baseline.json` on a later run to compare timings. The runner compiles once, but executes imports and top-level setup on every iteration, so compare each benchmark against the same benchmark in a previous run. The reported times are not isolated stage timings.

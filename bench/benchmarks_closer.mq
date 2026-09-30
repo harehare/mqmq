@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_closer.mq --iterations 10 --warmup 2
+# Run with: mq-bench bench/benchmarks_closer.mq --iterations 10 --warmup 2
 # Parse pretokenized lists repeatedly so setup does not dominate the result.
 
 import "lexer" as lexer | import "parser" as parser

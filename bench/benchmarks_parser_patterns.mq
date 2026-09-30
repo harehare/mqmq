@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_parser_patterns.mq --iterations 10 --warmup 2
+# Run with: mq-bench bench/benchmarks_parser_patterns.mq --iterations 10 --warmup 2
 # Long destructuring patterns parsed repeatedly.
 
 import "lexer" as lexer | import "parser" as parser

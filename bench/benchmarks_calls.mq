@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_calls.mq --iterations 10 --warmup 2
+# Run with: mq-bench bench/benchmarks_calls.mq --iterations 10 --warmup 2
 # Measures binding many supplied parameters against a captured environment.
 
 import "eval" as eval

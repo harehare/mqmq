@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_modules.mq --iterations 3 --warmup 1
+# Run with: mq-bench bench/benchmarks_modules.mq --iterations 3 --warmup 1
 # Measures namespace creation with many pre-existing bindings.
 
 import "eval" as eval

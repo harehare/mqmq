@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks.mq --filter fibonacci_20 --iterations 1 --warmup 0
+# Run with: mq-bench bench/benchmarks.mq --filter fibonacci_20 --iterations 1 --warmup 0
 # Each run also executes this file's imports and setup before calling the
 # selected function. Compare the same benchmark across code revisions.
 

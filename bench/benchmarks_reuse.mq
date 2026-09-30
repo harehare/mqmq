@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_reuse.mq --iterations 3 --warmup 1
+# Run with: mq-bench bench/benchmarks_reuse.mq --iterations 3 --warmup 1
 # Compare repeated parsing with explicit reuse of a compiled query.
 
 import "mqmq" as mqmq

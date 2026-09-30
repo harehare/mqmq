@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_lists.mq --iterations 3 --warmup 1
+# Run with: mq-bench bench/benchmarks_lists.mq --iterations 3 --warmup 1
 # Compare the same case across revisions; imports and token generation run on
 # every iteration, so the reported times include shared setup.
 

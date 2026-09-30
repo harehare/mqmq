@@ -1,4 +1,4 @@
-# Run with: mq-bench benchmarks_higher_order.mq --iterations 7 --warmup 2
+# Run with: mq-bench bench/benchmarks_higher_order.mq --iterations 7 --warmup 2
 # Repeated map/filter calls over a prebuilt array, with simple function bodies.
 
 import "eval" as eval
