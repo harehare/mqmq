@@ -2,8 +2,8 @@
 # Repeated interpreted loops expose per-iteration evaluator overhead.
 
 import "lexer" as lexer | import "parser" as parser | import "eval" as eval
-| let while_ast = parser::mq_parse(lexer::lex("var i = 0 | while (i < 1000): i += 1 end | i"))
-| let until_ast = parser::mq_parse(lexer::lex("var i = 0 | until (i >= 1000): i += 1 end | i"))
+| let while_ast = eval::mq_compile(parser::mq_parse(lexer::lex("var i = 0 | while (i < 1000): i += 1 end | i")))
+| let until_ast = eval::mq_compile(parser::mq_parse(lexer::lex("var i = 0 | until (i >= 1000): i += 1 end | i")))
 |
 
 def bench_while_1000():

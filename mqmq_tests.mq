@@ -14,3 +14,14 @@ def test_compiled_query_replaces_nodes_binding():
   let ast = mqmq_compile("nodes")
   | assert_eq(mqmq_eval_ast(ast, [1, 2], {__nodes__: [99]}), [1, 2])
 end
+
+def test_compiled_query_with_functions_is_reusable():
+  let ast = mqmq_compile("def f(n): if (n < 2): n else: f(n - 1) + f(n - 2) end | f(m)")
+  | assert_eq(mqmq_eval_ast(ast, None, {m: 10}), 55)
+  | assert_eq(mqmq_eval_ast(ast, None, {m: 12}), 144)
+end
+
+def test_compiled_query_keeps_its_ast():
+  let ast = mqmq_compile("1 + 2")
+  | assert_eq(ast[:ast], {kind: "bin", op: "+", left: {kind: "num", val: 1}, right: {kind: "num", val: 2}})
+end

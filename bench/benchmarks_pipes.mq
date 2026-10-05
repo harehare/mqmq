@@ -5,9 +5,9 @@ import "lexer" as lexer
 | import "parser" as parser
 | import "eval" as eval
 | let source = "1" + join(map(range(1, 2048), fn(i): " | ." end), "")
-| let ast = parser::mq_parse(lexer::lex(source))
+| let ast = eval::mq_compile(parser::mq_parse(lexer::lex(source)))
 | let increment_source = "0" + join(map(range(1, 256), fn(i): " | . + 1" end), "")
-| let increment_ast = parser::mq_parse(lexer::lex(increment_source))
+| let increment_ast = eval::mq_compile(parser::mq_parse(lexer::lex(increment_source)))
 | let pipe_tokens = lexer::lex(source)
 |
 

@@ -4,9 +4,9 @@
 
 import "eval" as eval
 | let headings = map(range(0, 1023), fn(i): to_h("heading", 1) end)
-| let h_ast = {kind: "sel", name: "h"}
-| let h6_ast = {kind: "sel", name: "h6"}
-| let text_ast = {kind: "sel", name: "text"}
+| let h_ast = eval::mq_compile({kind: "sel", name: "h"})
+| let h6_ast = eval::mq_compile({kind: "sel", name: "h6"})
+| let text_ast = eval::mq_compile({kind: "sel", name: "text"})
 |
 
 def bench_selector_h6():

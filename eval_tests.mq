@@ -493,3 +493,100 @@ end
 def test_eval_coroutine_stream_builtin_piped(query, md, expected):
   assert_eq(_run(query, md), expected)
 end
+
+# -- compiled evaluation: environment threading and control flow --
+#
+# A node that cannot bind or signal is evaluated for its value alone; one that
+# can falls back to a {val, env, ctrl} result. These mix both kinds.
+
+# @parametrize([
+#   ["if (true) do let a = 1 | a end | a", 1],
+#   ["if (false): 0 else do let a = 2 | a end | a", 2],
+#   ["let a = 1 | a + 1 | let b = . * 3 | a + b", 7],
+#   ["unless (false) do let u = 4 | u end | u", 4],
+#   ["try: error(\"boom\") catch(e): e[:message] | e[:message]", "boom"],
+#   ["1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + (let q = 9 | q) + q", 54],
+#   ["let a = [1, 2, 3] | a[0:(let j = 2 | j)] | j", 2],
+#   ["let x = 9 | foreach (x, [1, 2]): x + 1 end | x", 2],
+# ])
+def test_eval_compiled_bindings(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# @parametrize([
+#   ["foreach (x, [1, 2, 3]): if (x > 1): x * 10 else: x end end", [1, 20, 30]],
+#   ["var i = 0 | while (i < 10): i += 1 | if (i == 4): break i end end", 4],
+#   ["var i = 0 | var t = 0 | while (i < 6): i += 1 | if (i % 2 == 1): continue end | t += i end | t", 6],
+#   ["foreach (x, [1, 2, 3, 4]): if (x == 3): break x * 100 end | x end", 3],
+#   ["foreach (x, [1, 2, 3, 4]): if (x % 2 == 0): continue end | x end", 4],
+#   ["foreach (x, [1, 2]): foreach (y, [3, 4]): if (y == 4): break x * y end | y end end", [4, 4]],
+# ])
+def test_eval_compiled_loops(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# A loop whose body only reads and rewrites the current value is driven by it.
+# @parametrize([
+#   ["while (. < 5): . + 1 end", 0, 5],
+#   ["until (. >= 4): . + 2 end", 1, 5],
+# ])
+def test_eval_compiled_value_driven_loops(query, input, expected):
+  assert_eq(_run(query, input), expected)
+end
+
+# -- compiled evaluation: literals are built once and are immutable --
+
+# @parametrize([
+#   ["[1, \"a\", true, None, :b, [2, [3]], {k: [4]}]", [1, "a", true, None, "b", [2, [3]], {k: [4]}]],
+#   ["{a: 1, b: {c: [1, 2]}, a: 9}", {a: 9, b: {c: [1, 2]}}],
+#   ["foreach (i, [1, 2]): [i, [7, 8]] end", [[1, [7, 8]], [2, [7, 8]]]],
+#   ["foreach (i, [1, 2, 3]): {n: [1, 2]} end", [{n: [1, 2]}, {n: [1, 2]}, {n: [1, 2]}]],
+#   ["let d = {a: 1} | let e = set(d, \"a\", 2) | let f = {a: 1} | [d, e, f]", [{a: 1}, {a: 2}, {a: 1}]],
+# ])
+def test_eval_compiled_literals(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# -- compiled evaluation: calls --
+
+# @parametrize([
+#   ["\"hello\" | len()", 5],
+#   ["replace(\"a-b-c\", \"-\", \"+\")", "a+b+c"],
+#   ["def len(x): 42 end | len(\"abc\")", 42],
+#   ["let len = 5 | len + 1", 6],
+#   ["def f(a, b, c, d, e): a + b + c + d + e end | f(1, 2, 3, 4, 5)", 15],
+#   ["def f(a, b, c): a + b + c end | f(1, 2, 3)", 6],
+#   ["def f(): 7 end | f()", 7],
+#   ["def f(a, b=a * 2): a + b end | f(5)", 15],
+#   ["let add = fn(a): fn(b): a + b end end | let inc = add(1) | inc(41)", 42],
+# ])
+def test_eval_compiled_calls(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+def test_calling_a_non_function_binding_is_an_error():
+  assert_eq(_run("try: (let q = 5 | q(1)) catch: \"caught\"", None), "caught")
+  | assert_eq(_run("try: nosuchfn(1) catch(e): e[:message]", None), "Unknown function: nosuchfn")
+end
+
+# -- compiled programs are reusable --
+
+def test_compiled_program_is_reusable_across_values_and_environments():
+  let program = eval::mq_compile(parser::mq_parse(lexer::lex("x + . | let y = . * 2 | y")))
+  | assert_eq(eval::mq_eval(program, 2, {x: 1})[:val], 6)
+  | assert_eq(eval::mq_eval(program, 3, {x: 2})[:val], 10)
+  | assert_eq(eval::mq_eval_v(program, 1, {x: 1}), 4)
+end
+
+def test_compiled_program_matches_evaluating_its_ast():
+  let ast = parser::mq_parse(lexer::lex("def f(n): if (n < 2): n else: f(n - 1) + f(n - 2) end | f(10)"))
+  | assert_eq(eval::mq_eval(eval::mq_compile(ast), None, {})[:val], 55)
+  | assert_eq(eval::mq_eval(ast, None, {})[:val], 55)
+end
+
+def test_function_values_carry_compiled_code():
+  let result = _run("def f(x): x + 1 end | f", None)
+  | assert_eq(result[:kind], "fn")
+  | assert_eq(result[:name], "f")
+  | assert_eq(result[:body], {kind: "bin", op: "+", left: {kind: "ident", name: "x"}, right: {kind: "num", val: 1}})
+end

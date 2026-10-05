@@ -3,11 +3,11 @@
 
 import "eval" as eval
 | let items = range(0, 8191)
-| let foreach_ast = {kind: "foreach", iter_var: "item",
-    iter: {kind: "dot"}, body: {kind: "ident", name: "item"}}
-| let double_ast = {kind: "foreach", iter_var: "item", iter: {kind: "dot"},
+| let foreach_ast = eval::mq_compile({kind: "foreach", iter_var: "item",
+    iter: {kind: "dot"}, body: {kind: "ident", name: "item"}})
+| let double_ast = eval::mq_compile({kind: "foreach", iter_var: "item", iter: {kind: "dot"},
     body: {kind: "bin", op: "*", left: {kind: "ident", name: "item"},
-      right: {kind: "num", val: 2}}}
+      right: {kind: "num", val: 2}}})
 |
 
 def bench_foreach_8192():

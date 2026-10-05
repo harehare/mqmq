@@ -9,11 +9,11 @@ import "eval" as eval
     {pattern: {kind: "litpat", val: {kind: "num", val: i}},
      guard: None, body: {kind: "num", val: i}}
   end)
-| let if_ast = {kind: "if", cond: {kind: "bool", val: false},
+| let if_ast = eval::mq_compile({kind: "if", cond: {kind: "bool", val: false},
                 then: {kind: "num", val: 0}, elifs: elifs,
-                else_br: {kind: "num", val: 999}}
-| let match_ast = {kind: "match", val: {kind: "num", val: 512},
-                   arms: match_arms}
+                else_br: {kind: "num", val: 999}})
+| let match_ast = eval::mq_compile({kind: "match", val: {kind: "num", val: 512},
+                   arms: match_arms})
 |
 
 def bench_many_elifs():
