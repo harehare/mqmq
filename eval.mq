@@ -1,89 +1,86 @@
 # mqmq/eval.mq
-# Tree-walking evaluator for the mq AST, written in mq.
+# Evaluator for the mq AST, written in mq.
 #
 # The evaluator uses mq's own built-in functions to perform operations,
 # so it is a meta-interpreter layered on top of the real mq runtime.
 #
-# eval(ast, value, env) → {val: <result>, env: <updated_env>}
-#   ast   - AST node produced by parser.mq
+# The AST is compiled once into closures (see "compilation to closures"
+# below), and the closures are run against a value and an environment.
+#
+# mq_eval(ast, value, env) → {val: <result>, env: <updated_env>}
+#   ast   - AST node produced by parser.mq, or a mq_compile result
 #   value - current "self" value flowing through the pipeline
 #   env   - dict of variable bindings {name: value, ...}
+#
+# mq_compile(ast) compiles an AST ahead of time. Evaluate the result any
+# number of times without compiling again.
 
 import "yaml"
-## Node kinds whose mq_eval result env is always the env they were given
-## (call, arr, dict, and interp discard their children's envs). A value-only
-## evaluation of these needs no {val, env} pair, and a sibling evaluated after
-## one of them can reuse the original env.
-| let _KEEPS_ENV = {
-  "ident": true, "call": true, "str": true, "num": true, "bool": true,
-  "none": true, "atom": true, "self": true, "dot": true, "nodes": true,
-  "sel": true, "fn": true, "arr": true, "dict": true, "interp": true,
-}
 | let _HEADING_NAMES = {h1: true, h2: true, h3: true, h4: true, h5: true, h6: true}
 | let _ITEM_LITERAL_BIN_OPS = {
-  "+": true, "-": true, "*": true, "/": true, "%": true,
-  "==": true, "!=": true, "<": true, "<=": true, ">": true, ">=": true,
-}
+    "+": true, "-": true, "*": true, "/": true, "%": true,
+    "==": true, "!=": true, "<": true, "<=": true, ">": true, ">=": true,
+  }
 | let _NON_TEXT_NAMES = {
-  h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
-  code: true, list: true, html: true,
-}
+    h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
+    code: true, list: true, html: true,
+  }
 |
 
 # ── environment helpers ───────────────────────────────────────────────────────
 
-## Bind a name in the environment, returning the new env.
+# Bind a name in the environment, returning the new env.
 def _env_set(env, name, val):
   set(env, name, val)
 end
 
-## Read the control-flow signal ("none" | "break" | "continue") off an eval result.
+# Read the control-flow signal ("none" | "break" | "continue") off an eval result.
 def _ctrl(r):
-  if (is_none(r[:ctrl])): "none" else: r[:ctrl]
+  if (r[:ctrl] == None): "none" else: r[:ctrl]
 end
 
-## Bind an array or dict destructuring pattern (see parser.mq's "arraypat" /
-## "dictpat" nodes) against a value, returning the updated env. Batch large
-## patterns; constructing the binding list costs more than set() for small ones.
+# Bind an array or dict destructuring pattern (see parser.mq's "arraypat" /
+# "dictpat" nodes) against a value, returning the updated env. Batch large
+# patterns; constructing the binding list costs more than set() for small ones.
 def _bind_pattern(pat, val, env):
   if (pat[:kind] == "arraypat") do
       let names = pat[:names]
       | let value_len = len(val)
       | if (len(names) >= 32) do
-          let bindings = map(range(0, len(names) - 1), fn(i):
-            [names[i], if (i < value_len): val[i] else: None]
-          end)
-          | let with_rest = if (is_none(pat[:rest])): bindings
+            let bindings = map(range(0, len(names) - 1), fn(i):
+              [names[i], if (i < value_len): val[i] else: None]
+            end)
+            | let with_rest = if (pat[:rest] == None): bindings
               else: bindings + [[pat[:rest], if (len(names) < value_len): val[len(names):value_len] else: []]]
-          | dict(entries(env) + with_rest)
-        end
+            | dict(entries(env) + with_rest)
+          end
         else do
-          var e = env
-          | var i = 0
-          | while (i < len(names)):
-              e = _env_set(e, names[i], if (i < value_len): val[i] else: None)
-              | i += 1
-            end
-          | if (!is_none(pat[:rest])):
-              e = _env_set(e, pat[:rest], if (len(names) < value_len): val[len(names):value_len] else: [])
-          | e
-        end
+            var e = env
+            | var i = 0
+            | while (i < len(names)):
+                e = _env_set(e, names[i], if (i < value_len): val[i] else: None)
+                | i += 1
+              end
+            | if (pat[:rest] != None):
+                e = _env_set(e, pat[:rest], if (len(names) < value_len): val[len(names):value_len] else: [])
+            | e
+          end
     end
   else do
       let names = pat[:names]
       | if (len(names) >= 32) do
-          let bindings = map(names, fn(name): [name, val[name]] end)
-          | dict(entries(env) + bindings)
-        end
+            let bindings = map(names, fn(name): [name, val[name]] end)
+            | dict(entries(env) + bindings)
+          end
         else do
-          var e = env
-          | var i = 0
-          | while (i < len(names)):
-              e = _env_set(e, names[i], val[names[i]])
-              | i += 1
-            end
-          | e
-        end
+            var e = env
+            | var i = 0
+            | while (i < len(names)):
+                e = _env_set(e, names[i], val[names[i]])
+                | i += 1
+              end
+            | e
+          end
     end
 end
 
@@ -91,16 +88,25 @@ end
 
 def _match_type(name, val):
   if (name == "string"): is_string(val)
-    elif (name == "number"): is_number(val)
-    elif (name == "array"):  is_array(val)
-    elif (name == "dict"):   is_dict(val)
-    elif (name == "bool"):   is_bool(val)
-    elif (name == "none"):   is_none(val)
-    else: false
+  elif (name == "number"): is_number(val)
+  elif (name == "array"): is_array(val)
+  elif (name == "dict"): is_dict(val)
+  elif (name == "bool"): is_bool(val)
+  elif (name == "none"): val == None
+  else: false
 end
 
-## Try to match `val` against a single pattern node, returning
-## {matched: bool, env: <env with any bindings applied>}.
+# Value of a literal pattern. Parsed literals are number, string, boolean, or
+# None nodes, read straight from the AST; any other node is compiled.
+def _lit_value(lit, val, env):
+  let k = lit[:kind]
+  | if (k == "num" || k == "str" || k == "bool"): lit[:val]
+    elif (k == "none"): None
+    else: mq_eval(lit, val, env)[:val]
+end
+
+# Try to match `val` against a single pattern node, returning
+# {matched: bool, env: <env with any bindings applied>}.
 def _match_pattern(pat, val, env):
   let k = pat[:kind]
   | if (k == "wildpat"):
@@ -109,131 +115,99 @@ def _match_pattern(pat, val, env):
       {matched: true, env: _env_set(env, pat[:name], val)}
     elif (k == "typepat"):
       {matched: _match_type(pat[:name], val), env: env}
-    elif (k == "litpat") do
-      let lit_val = _ev(pat[:val], val, env)
-      | {matched: val == lit_val, env: env}
-    end
+    elif (k == "litpat"):
+      {matched: val == _lit_value(pat[:val], val, env), env: env}
     elif (k == "orpat") do
-      let lr = _match_pattern(pat[:left], val, env)
-      | if (lr[:matched]): lr else: _match_pattern(pat[:right], val, env)
-    end
+        let lr = _match_pattern(pat[:left], val, env)
+        | if (lr[:matched]): lr else: _match_pattern(pat[:right], val, env)
+      end
     elif (k == "arraypat") do
-      if (!is_array(val)) do
-          {matched: false, env: env}
-        end
-      elif (is_none(pat[:rest]) && len(pat[:names]) != len(val)) do
-          {matched: false, env: env}
-        end
-      elif (!is_none(pat[:rest]) && len(val) < len(pat[:names])) do
-          {matched: false, env: env}
-        end
-      else do
-          {matched: true, env: _bind_pattern(pat, val, env)}
-        end
-    end
+        if (!is_array(val)) do
+            {matched: false, env: env}
+          end
+        elif (pat[:rest] == None && len(pat[:names]) != len(val)) do
+            {matched: false, env: env}
+          end
+        elif (pat[:rest] != None && len(val) < len(pat[:names])) do
+            {matched: false, env: env}
+          end
+        else do
+            {matched: true, env: _bind_pattern(pat, val, env)}
+          end
+      end
     elif (k == "dictpat") do
-      if (!is_dict(val)): {matched: false, env: env}
-      else: {matched: true, env: _bind_pattern(pat, val, env)}
-    end
+        if (!is_dict(val)): {matched: false, env: env}
+        else: {matched: true, env: _bind_pattern(pat, val, env)}
+      end
     else:
       {matched: false, env: env}
 end
 
-## Walk match arms in order, returning the {val, env} of the first arm whose
-## pattern matches `matchval` and (if present) whose guard is truthy.
-def _try_match_arms(arms, matchval, value, env):
-  var i = 0
-  | var result = None
-  | let n = len(arms)
-  | while (i < n && is_none(result)):
-      let arm = arms[i]
-      | let pattern = arm[:pattern]
-      | if (pattern[:kind] == "litpat") do
-          let literal = pattern[:val]
-          | let literal_kind = literal[:kind]
-          | let literal_value = if (literal_kind == "num" || literal_kind == "str" || literal_kind == "bool"):
-              literal[:val]
-            elif (literal_kind == "none"): None
-            else: _ev(literal, matchval, env)
-          | if (matchval == literal_value &&
-              (is_none(arm[:guard]) || _ev(arm[:guard], value, env))):
-            result = mq_eval(arm[:body], value, env)
-        end
-        else do
-          let mr = _match_pattern(pattern, matchval, env)
-          | if (mr[:matched] && (is_none(arm[:guard]) || _ev(arm[:guard], value, mr[:env]))):
-              result = mq_eval(arm[:body], value, mr[:env])
-        end
-      | i += 1
-    end
-  | if (is_none(result)): error("No match arm matched") else: result
-end
-
 # ── apply a closure (fn node) to arguments ───────────────────────────────────
 
-## Apply a single-arg fn closure to one argument.
+# Apply a single-arg fn closure to one argument.
 def _apply1(fn_val, arg, env):
-  let p = if (is_empty(fn_val[:params])): "_" else: fn_val[:params][0][:name]
+  let p = if (len(fn_val[:params]) == 0): "_" else: fn_val[:params][0][:name]
   | let call_env = set(fn_val[:env], p, arg)
-  | _ev(fn_val[:body], arg, call_env)
+  | _call_body(fn_val, arg, call_env)
 end
 
-## Left-fold arr with fn(acc, item), starting from init. (Backs `fold`; done by
-## hand with a while loop.)
+# Left-fold arr with fn(acc, item), starting from init. (Backs `fold`; done by
+# hand with a while loop.)
 def _fold(arr, init, fn_val, env):
-  if (is_dict(fn_val) && fn_val[:kind] == "fn" && !is_empty(arr)) do
-    let params = fn_val[:params]
-    | let p1 = if (len(params) > 0): params[0][:name] else: "_"
-    | let p2 = if (len(params) > 1): params[1][:name] else: "_"
-    | let closure_env = fn_val[:env]
-    | let body = fn_val[:body]
-    | var acc = init
-    | var i = 0
-    | let n = len(arr)
-    | while (i < n):
-        let item = arr[i]
-        | acc = _ev(body, acc, set(set(closure_env, p1, acc), p2, item))
-        | i += 1
-      end
-    | acc
-  end
+  if (has(fn_val, "kind") && fn_val[:kind] == "fn" && len(arr) > 0) do
+      let params = fn_val[:params]
+      | let p1 = if (len(params) > 0): params[0][:name] else: "_"
+      | let p2 = if (len(params) > 1): params[1][:name] else: "_"
+      | let closure_env = fn_val[:env]
+      | let body = _body_code(fn_val)
+      | var acc = init
+      | var i = 0
+      | let n = len(arr)
+      | while (i < n):
+          let item = arr[i]
+          | acc = body(acc, set(set(closure_env, p1, acc), p2, item))
+          | i += 1
+        end
+      | acc
+    end
   else do
-    var acc = init
-    | var i = 0
-    | let n = len(arr)
-    | while (i < n):
-        acc = _apply2(fn_val, acc, arr[i], env)
-        | i += 1
-      end
-    | acc
-  end
+      var acc = init
+      | var i = 0
+      | let n = len(arr)
+      | while (i < n):
+          acc = _apply2(fn_val, acc, arr[i], env)
+          | i += 1
+        end
+      | acc
+    end
 end
 
-## Apply a two-arg fn closure.
+# Apply a two-arg fn closure.
 def _apply2(fn_val, a1, a2, env):
   let params = fn_val[:params]
   | let p1 = if (len(params) > 0): params[0][:name] else: "_"
   | let p2 = if (len(params) > 1): params[1][:name] else: "_"
   | let call_env = set(set(fn_val[:env], p1, a1), p2, a2)
-  | _ev(fn_val[:body], a1, call_env)
+  | _call_body(fn_val, a1, call_env)
 end
 
-# ── moku Markdown filters ────────────────────────────────────────────────────
+# ── Markdown filters ────────────────────────────────────────────────────
 
 # Make a wikilink from a scalar, or from every item in an array.  This returns
 # ordinary Markdown text rather than a parsed node because mq's native runtime
 # has a wikilink selector but no corresponding node constructor.
-def _moku_wikilink(value):
+def _wikilink(value):
   if (is_array(value)):
-      map(value, fn(item): _moku_wikilink(item) end)
-    else:
-      "[[" + to_string(value) + "]]"
+    map(value, fn(item): _wikilink(item) end)
+  else:
+    "[[" + to_string(value) + "]]"
 end
 
 # Serialize a value as one YAML property.  Collections are indented beneath
 # the property key; scalar values stay on the same line.  `yaml_stringify` is
 # delegated to mq's standard yaml module, rather than reimplemented here.
-def _moku_yaml_property(value, key):
+def _yaml_property(value, key):
   let yaml = yaml::yaml_stringify(value)
   | if (is_array(value) || is_dict(value)):
       key + ":\n" + indent(yaml, "  ")
@@ -243,353 +217,369 @@ end
 
 # ── selector evaluation ───────────────────────────────────────────────────────
 
-## Filter a value (array of nodes or a single node) by a named selector.
-def _eval_sel(name, value):
-  let pred = if (name == "h1"): fn(node): is_h1(node) end
-    elif (name == "h2"): fn(node): is_h2(node) end
-    elif (name == "h3"): fn(node): is_h3(node) end
-    elif (name == "h4"): fn(node): is_h4(node) end
-    elif (name == "h5"): fn(node): is_h5(node) end
-    elif (name == "h6"): fn(node): is_h6(node) end
-    elif (name == "h"): fn(node): !is_none(_HEADING_NAMES[to_md_name(node)]) end
-    elif (name == "code"): fn(node): is_code(node) end
-    elif (name == "list" || name == "list_item"): fn(node): is_list(node) end
-    elif (name == "table_cell"): fn(node): is_table_cell(node) end
-    elif (name == "table_align"): fn(node): is_table_align(node) end
-    elif (name == "table"): fn(node): is_table_cell(node) || is_table_align(node) end
-    elif (name == "blockquote"): fn(node): to_md_name(node) == "blockquote" end
-    elif (name == "thematic_break"): fn(node): to_md_name(node) == "Horizontal_rule" end
-    elif (name == "html"): fn(node): is_html(node) end
-    elif (name == "definition"): fn(node): to_md_name(node) == "definition" end
-    elif (name == "text"): fn(node): is_none(_NON_TEXT_NAMES[to_md_name(node)]) end
-    else: error("Unknown selector: ." + name)
-  | if (is_array(value)):
-      filter(value, pred)
-    elif (pred(value)):
-      [value]
-    else:
-      []
+# Predicate for a named selector, or None for an unknown name.
+def _sel_pred(name):
+  if (name == "h1"): fn(node): is_h1(node) end
+  elif (name == "h2"): fn(node): is_h2(node) end
+  elif (name == "h3"): fn(node): is_h3(node) end
+  elif (name == "h4"): fn(node): is_h4(node) end
+  elif (name == "h5"): fn(node): is_h5(node) end
+  elif (name == "h6"): fn(node): is_h6(node) end
+  elif (name == "h"): fn(node): _HEADING_NAMES[to_md_name(node)] != None end
+  elif (name == "code"): fn(node): is_code(node) end
+  elif (name == "list" || name == "list_item"): fn(node): is_list(node) end
+  elif (name == "table_cell"): fn(node): is_table_cell(node) end
+  elif (name == "table_align"): fn(node): is_table_align(node) end
+  elif (name == "table"): fn(node): is_table_cell(node) || is_table_align(node) end
+  elif (name == "blockquote"): fn(node): to_md_name(node) == "blockquote" end
+  elif (name == "thematic_break"): fn(node): to_md_name(node) == "Horizontal_rule" end
+  elif (name == "html"): fn(node): is_html(node) end
+  elif (name == "definition"): fn(node): to_md_name(node) == "definition" end
+  elif (name == "text"): fn(node): _NON_TEXT_NAMES[to_md_name(node)] == None end
+  else: None
 end
 
-# ── built-in function dispatch ────────────────────────────────────────────────
+# Filter a value (array of nodes or a single node) by a selector predicate.
+def _apply_sel(pred, value):
+  if (is_array(value)):
+    filter(value, pred)
+  elif (pred(value)):
+    [value]
+  else:
+    []
+end
 
-## Evaluate a built-in function call.
-## args_vals is the list of already-evaluated argument values.
+# ── built-in functions ────────────────────────────────────────────────────────
+
+# `map(items, f)` for a function value `f`. A body of the form `item OP
+# <number>` reads only its parameter, so it needs no per-item environment.
+def _builtin_map(items, f, env):
+  if (has(f, "kind") && f[:kind] == "fn" && len(items) > 0) do
+      let p = if (len(f[:params]) == 0): "_" else: f[:params][0][:name]
+      | let body = f[:body]
+      | if (_is_item_literal_bin(body, p)) do
+            let op = body[:op]
+            | let right = body[:right][:val]
+            | map(items, fn(item): _eval_bin(op, item, right) end)
+          end
+        else do
+            let closure_env = f[:env]
+            | let run = _body_code(f)
+            | map(items, fn(item): run(item, set(closure_env, p, item)) end)
+          end
+    end
+  else:
+    map(items, fn(item): _apply1(f, item, env) end)
+end
+
+def _builtin_filter(items, f, env):
+  if (has(f, "kind") && f[:kind] == "fn" && len(items) > 0) do
+      let p = if (len(f[:params]) == 0): "_" else: f[:params][0][:name]
+      | let body = f[:body]
+      | if (_is_item_literal_bin(body, p)) do
+            let op = body[:op]
+            | let right = body[:right][:val]
+            | filter(items, fn(item): _eval_bin(op, item, right) end)
+          end
+        else do
+            let closure_env = f[:env]
+            | let run = _body_code(f)
+            | filter(items, fn(item): run(item, set(closure_env, p, item)) end)
+          end
+    end
+  else:
+    filter(items, fn(item): _apply1(f, item, env) end)
+end
+
+# Every built-in as `fn(a0, a1, a2, n, value, env)`: the first three argument
+# values (a0 is the current value when there are no arguments, a1 and a2 are
+# None when missing), the argument count, and the call's value and env. The
+# table is indexed once per call site, when the call is compiled, instead of
+# scanning a chain of name comparisons on every call.
+let _BUILTINS = {
+  "len": fn(a0, a1, a2, n, value, env): len(a0) end,
+  "pow": fn(a0, a1, a2, n, value, env): pow(a0, a1) end,
+
+  # Type predicates
+  "is_empty": fn(a0, a1, a2, n, value, env): is_empty(a0) end,
+  "is_array": fn(a0, a1, a2, n, value, env): is_array(a0) end,
+  "is_dict": fn(a0, a1, a2, n, value, env): is_dict(a0) end,
+  "is_string": fn(a0, a1, a2, n, value, env): is_string(a0) end,
+  "is_number": fn(a0, a1, a2, n, value, env): is_number(a0) end,
+  "is_bool": fn(a0, a1, a2, n, value, env): is_bool(a0) end,
+  "is_none": fn(a0, a1, a2, n, value, env): a0 == None end,
+
+  # Markdown node type predicates
+  "is_h1": fn(a0, a1, a2, n, value, env): is_h1(a0) end,
+  "is_h2": fn(a0, a1, a2, n, value, env): is_h2(a0) end,
+  "is_h3": fn(a0, a1, a2, n, value, env): is_h3(a0) end,
+  "is_h4": fn(a0, a1, a2, n, value, env): is_h4(a0) end,
+  "is_h5": fn(a0, a1, a2, n, value, env): is_h5(a0) end,
+  "is_h6": fn(a0, a1, a2, n, value, env): is_h6(a0) end,
+  "is_h": fn(a0, a1, a2, n, value, env): is_h(a0) end,
+  "is_code": fn(a0, a1, a2, n, value, env): is_code(a0) end,
+  "is_list": fn(a0, a1, a2, n, value, env): is_list(a0) end,
+  "is_list_item": fn(a0, a1, a2, n, value, env): is_list(a0) end,
+  "is_table_cell": fn(a0, a1, a2, n, value, env): is_table_cell(a0) end,
+  "is_table_align": fn(a0, a1, a2, n, value, env): is_table_align(a0) end,
+  "is_table": fn(a0, a1, a2, n, value, env): is_table_cell(a0) || is_table_align(a0) end,
+  "is_blockquote": fn(a0, a1, a2, n, value, env): to_md_name(a0) == "blockquote" end,
+  "is_thematic_break": fn(a0, a1, a2, n, value, env): to_md_name(a0) == "Horizontal_rule" end,
+  "is_html": fn(a0, a1, a2, n, value, env): is_html(a0) end,
+  "is_definition": fn(a0, a1, a2, n, value, env): to_md_name(a0) == "definition" end,
+
+  # Conversion
+  "to_text": fn(a0, a1, a2, n, value, env): to_text(a0) end,
+  "to_string": fn(a0, a1, a2, n, value, env): to_string(a0) end,
+  "to_number": fn(a0, a1, a2, n, value, env): to_number(a0) end,
+  "to_bool": fn(a0, a1, a2, n, value, env):
+    a0 == true || (is_number(a0) && a0 != 0) || (is_string(a0) && !is_empty(a0))
+  end,
+
+  # Collection inspection
+  "first": fn(a0, a1, a2, n, value, env): first(a0) end,
+  "last": fn(a0, a1, a2, n, value, env): last(a0) end,
+  "keys": fn(a0, a1, a2, n, value, env): keys(a0) end,
+  "values": fn(a0, a1, a2, n, value, env): values(a0) end,
+  "entries": fn(a0, a1, a2, n, value, env): entries(a0) end,
+
+  # Collection construction / transformation
+  "range": fn(a0, a1, a2, n, value, env):
+    if (n == 1): range(a0) else: range(a0, a1)
+  end,
+  "flatten": fn(a0, a1, a2, n, value, env): flatten(a0) end,
+  "compact": fn(a0, a1, a2, n, value, env): compact(a0) end,
+  "unique": fn(a0, a1, a2, n, value, env): unique_by(a0, fn(x): x end) end,
+  "sort": fn(a0, a1, a2, n, value, env): sort(a0) end,
+  "reverse": fn(a0, a1, a2, n, value, env): reverse(a0) end,
+  "head": fn(a0, a1, a2, n, value, env):
+    let count = if (a1 == None): 1 else: a1
+    | a0[0:count]
+  end,
+  "tail": fn(a0, a1, a2, n, value, env):
+    let count = if (a1 == None): 1 else: a1
+    | let ln = len(a0)
+    | let from = if (ln - count < 0): 0 else: ln - count
+    | a0[from:ln]
+  end,
+  "zip": fn(a0, a1, a2, n, value, env): zip(a0, a1) end,
+
+  # Coroutine / lazy stream builtins (no interpreted `yield`, see Known Limitations).
+  "is_coroutine": fn(a0, a1, a2, n, value, env): is_coroutine(a0) end,
+  "to_coroutine": fn(a0, a1, a2, n, value, env): to_coroutine(a0) end,
+  "collect": fn(a0, a1, a2, n, value, env): collect(a0) end,
+  "stream_range": fn(a0, a1, a2, n, value, env):
+    if (n == 2): stream_range(a0, a1) else: stream_range(a0, a1, a2)
+  end,
+  "next": fn(a0, a1, a2, n, value, env): next(a0) end,
+  "close": fn(a0, a1, a2, n, value, env): close(a0) end,
+  "iterables": fn(a0, a1, a2, n, value, env): iterables(a0) end,
+  # 2-arity: `x | take(n)` (self as 1st arg) and `take(x, n)` (both explicit) both work.
+  "send": fn(a0, a1, a2, n, value, env):
+    if (n == 2): send(a0, a1) else: send(value, a0)
+  end,
+  "take": fn(a0, a1, a2, n, value, env):
+    if (n == 2): take(a0, a1) else: take(value, a0)
+  end,
+  "skip": fn(a0, a1, a2, n, value, env):
+    if (n == 2): skip(a0, a1) else: skip(value, a0)
+  end,
+  "take_while": fn(a0, a1, a2, n, value, env):
+    let arr = if (n == 2): a0 else: value
+    | let f = if (n == 2): a1 else: a0
+    | take_while(arr, fn(item): _apply1(f, item, env) end)
+  end,
+  "skip_while": fn(a0, a1, a2, n, value, env):
+    let arr = if (n == 2): a0 else: value
+    | let f = if (n == 2): a1 else: a0
+    | skip_while(arr, fn(item): _apply1(f, item, env) end)
+  end,
+
+  # Higher-order collection functions (a1 must be a fn closure)
+  "map": fn(a0, a1, a2, n, value, env): _builtin_map(a0, a1, env) end,
+  "filter": fn(a0, a1, a2, n, value, env): _builtin_filter(a0, a1, env) end,
+  "flat_map": fn(a0, a1, a2, n, value, env): flat_map(a0, fn(item): _apply1(a1, item, env) end) end,
+  "sort_by": fn(a0, a1, a2, n, value, env): sort_by(a0, fn(item): _apply1(a1, item, env) end) end,
+  "group_by": fn(a0, a1, a2, n, value, env): group_by(a0, fn(item): _apply1(a1, item, env) end) end,
+  "fold": fn(a0, a1, a2, n, value, env): _fold(a0, a1, a2, env) end,
+  "each": fn(a0, a1, a2, n, value, env): each(a0, fn(item): _apply1(a1, item, env) end) end,
+  "any": fn(a0, a1, a2, n, value, env): any(a0, fn(item): _apply1(a1, item, env) end) end,
+  "all": fn(a0, a1, a2, n, value, env): all(a0, fn(item): _apply1(a1, item, env) end) end,
+
+  # Array mutation helpers
+  "get": fn(a0, a1, a2, n, value, env): get(a0, a1) end,
+  "set": fn(a0, a1, a2, n, value, env): set(a0, a1, a2) end,
+  "del": fn(a0, a1, a2, n, value, env): del(a0, a1) end,
+  "push": fn(a0, a1, a2, n, value, env): a0 + [a1] end,
+  "pop": fn(a0, a1, a2, n, value, env): a0[0:len(a0) - 1] end,
+
+  # String operations
+  "contains": fn(a0, a1, a2, n, value, env): contains(a0, a1) end,
+  "starts_with": fn(a0, a1, a2, n, value, env): starts_with(a0, a1) end,
+  "ends_with": fn(a0, a1, a2, n, value, env): ends_with(a0, a1) end,
+  "replace": fn(a0, a1, a2, n, value, env): replace(a0, a1, a2) end,
+  "gsub": fn(a0, a1, a2, n, value, env): gsub(a0, a1, a2) end,
+  "split": fn(a0, a1, a2, n, value, env): split(a0, a1) end,
+  "join": fn(a0, a1, a2, n, value, env): join(a0, if (a1 == None): "" else: a1) end,
+  "trim": fn(a0, a1, a2, n, value, env): trim(a0) end,
+  "ltrim": fn(a0, a1, a2, n, value, env): ltrim(a0) end,
+  "rtrim": fn(a0, a1, a2, n, value, env): rtrim(a0) end,
+  "upper": fn(a0, a1, a2, n, value, env): upcase(a0) end,
+  "lower": fn(a0, a1, a2, n, value, env): downcase(a0) end,
+  "regex_match": fn(a0, a1, a2, n, value, env): regex_match(a0, a1) end,
+
+  # Math
+  "abs": fn(a0, a1, a2, n, value, env): abs(a0) end,
+  "floor": fn(a0, a1, a2, n, value, env): floor(a0) end,
+  "ceil": fn(a0, a1, a2, n, value, env): ceil(a0) end,
+  "round": fn(a0, a1, a2, n, value, env): round(a0) end,
+  "min": fn(a0, a1, a2, n, value, env):
+    if (n == 1): first(sort(a0)) else: min(a0, a1)
+  end,
+  "max": fn(a0, a1, a2, n, value, env):
+    if (n == 1): last(sort(a0)) else: max(a0, a1)
+  end,
+  "sqrt": fn(a0, a1, a2, n, value, env): sqrt(a0) end,
+  "log": fn(a0, a1, a2, n, value, env): ln(a0) end,
+
+  # Node / markdown operations
+  "select": fn(a0, a1, a2, n, value, env):
+    filter(if (is_array(value)): value else: [value], fn(node): _apply1(a0, node, env) end)
+  end,
+  "attr": fn(a0, a1, a2, n, value, env): attr(a0, a1) end,
+  "set_attr": fn(a0, a1, a2, n, value, env): set_attr(a0, a1, a2) end,
+  "to_md_text": fn(a0, a1, a2, n, value, env): to_md_text(a0) end,
+  "to_md_list": fn(a0, a1, a2, n, value, env): to_md_list(a0, a1) end,
+  "to_html": fn(a0, a1, a2, n, value, env): to_html(a0) end,
+
+  # Markdown construction and moku-compatible formatting filters.  The
+  # short names take their value from the pipeline (`title | h1`), while the
+  # `to_*` names retain mq's explicit-argument API.
+  "to_h": fn(a0, a1, a2, n, value, env): to_h(a0, a1) end,
+  "to_blockquote": fn(a0, a1, a2, n, value, env): to_blockquote(a0) end,
+  "to_strong": fn(a0, a1, a2, n, value, env): to_strong(a0) end,
+  "to_em": fn(a0, a1, a2, n, value, env): to_em(a0) end,
+  "to_delete": fn(a0, a1, a2, n, value, env): to_delete(a0) end,
+  "to_code": fn(a0, a1, a2, n, value, env): to_code(a0, a1) end,
+  "to_code_inline": fn(a0, a1, a2, n, value, env): to_code_inline(a0) end,
+  "h1": fn(a0, a1, a2, n, value, env): to_h(a0, 1) end,
+  "h2": fn(a0, a1, a2, n, value, env): to_h(a0, 2) end,
+  "h3": fn(a0, a1, a2, n, value, env): to_h(a0, 3) end,
+  "h4": fn(a0, a1, a2, n, value, env): to_h(a0, 4) end,
+  "h5": fn(a0, a1, a2, n, value, env): to_h(a0, 5) end,
+  "h6": fn(a0, a1, a2, n, value, env): to_h(a0, 6) end,
+  "blockquote": fn(a0, a1, a2, n, value, env): to_blockquote(a0) end,
+  "bold": fn(a0, a1, a2, n, value, env): to_strong(a0) end,
+  "italic": fn(a0, a1, a2, n, value, env): to_em(a0) end,
+  "strike": fn(a0, a1, a2, n, value, env): to_delete(a0) end,
+  "code_inline": fn(a0, a1, a2, n, value, env): to_code_inline(a0) end,
+  "code": fn(a0, a1, a2, n, value, env): to_code(value, a0) end,
+  "wikilink": fn(a0, a1, a2, n, value, env): _wikilink(a0) end,
+  "yaml_property": fn(a0, a1, a2, n, value, env): _yaml_property(value, a0) end,
+
+  # Control
+  "error": fn(a0, a1, a2, n, value, env): error(a0) end,
+  "debug": fn(a0, a1, a2, n, value, env): debug(a0) end,
+  "env": fn(a0, a1, a2, n, value, env): env end,
+}
+|
+
+# The built-in for `name`; a name that is not a built-in resolves to an
+# implementation that reports it as unknown.
+def _builtin_impl(name):
+  let impl = _BUILTINS[name]
+  | if (impl == None): fn(a0, a1, a2, n, value, env): error("Unknown function: " + name) end
+    else: impl
+end
+
+# Evaluate a built-in function call.
+# args_vals is the list of already-evaluated argument values.
 def _eval_builtin(name, args_vals, value, env):
-  # Helper: first arg or current value if no args
-  let arg_count = len(args_vals)
-  | let a0 = if (arg_count > 0): args_vals[0] else: value
-  | let a1 = if (arg_count > 1): args_vals[1] else: None
-  | let a2 = if (arg_count > 2): args_vals[2] else: None
-
-  # Common calls should not scan the rest of the dispatcher.
-  | if (name == "len"):         len(a0)
-    elif (name == "pow"):       pow(a0, a1)
-
-    # Type predicates
-    elif (name == "is_empty"):    is_empty(a0)
-    elif (name == "is_array"):  is_array(a0)
-    elif (name == "is_dict"):   is_dict(a0)
-    elif (name == "is_string"): is_string(a0)
-    elif (name == "is_number"): is_number(a0)
-    elif (name == "is_bool"):   is_bool(a0)
-    elif (name == "is_none"):   is_none(a0)
-
-    # Markdown node type predicates
-    elif (name == "is_h1"):           is_h1(a0)
-    elif (name == "is_h2"):           is_h2(a0)
-    elif (name == "is_h3"):           is_h3(a0)
-    elif (name == "is_h4"):           is_h4(a0)
-    elif (name == "is_h5"):           is_h5(a0)
-    elif (name == "is_h6"):           is_h6(a0)
-    elif (name == "is_h"):            is_h(a0)
-    elif (name == "is_code"):         is_code(a0)
-    elif (name == "is_list"):         is_list(a0)
-    elif (name == "is_list_item"):    is_list(a0)
-    elif (name == "is_table_cell"):   is_table_cell(a0)
-    elif (name == "is_table_align"):  is_table_align(a0)
-    elif (name == "is_table"):        is_table_cell(a0) || is_table_align(a0)
-    elif (name == "is_blockquote"):   to_md_name(a0) == "blockquote"
-    elif (name == "is_thematic_break"): to_md_name(a0) == "Horizontal_rule"
-    elif (name == "is_html"):         is_html(a0)
-    elif (name == "is_definition"):   to_md_name(a0) == "definition"
-
-    # Conversion
-    elif (name == "to_text"):   to_text(a0)
-    elif (name == "to_string"): to_string(a0)
-    elif (name == "to_number"): to_number(a0)
-    elif (name == "to_bool"):   a0 == true || (is_number(a0) && a0 != 0) || (is_string(a0) && !is_empty(a0))
-
-    # Collection inspection
-    elif (name == "first"):   first(a0)
-    elif (name == "last"):    last(a0)
-    elif (name == "keys"):    keys(a0)
-    elif (name == "values"):  values(a0)
-    elif (name == "entries"): entries(a0)
-
-    # Collection construction / transformation
-    elif (name == "range"):
-      if (arg_count == 1): range(a0)
-      else: range(a0, a1)
-    elif (name == "flatten"):  flatten(a0)
-    elif (name == "compact"):  compact(a0)
-    elif (name == "unique"):   unique_by(a0, fn(x): x end)
-    elif (name == "sort"):     sort(a0)
-    elif (name == "reverse"):  reverse(a0)
-    elif (name == "head") do
-      let n = if (is_none(a1)): 1 else: a1
-      | a0[0:n]
-    end
-    elif (name == "tail") do
-      let n = if (is_none(a1)): 1 else: a1
-      | let ln = len(a0)
-      | let from = if (ln - n < 0): 0 else: ln - n
-      | a0[from:ln]
-    end
-    elif (name == "zip"):      zip(a0, a1)
-
-    # Coroutine / lazy stream builtins (no interpreted `yield`, see Known Limitations).
-    elif (name == "is_coroutine"): is_coroutine(a0)
-    elif (name == "to_coroutine"): to_coroutine(a0)
-    elif (name == "collect"):      collect(a0)
-    elif (name == "stream_range"):
-      if (arg_count == 2): stream_range(a0, a1)
-      else: stream_range(a0, a1, a2)
-    elif (name == "next"):      next(a0)
-    elif (name == "close"):     close(a0)
-    elif (name == "iterables"): iterables(a0)
-    # 2-arity: `x | take(n)` (self as 1st arg) and `take(x, n)` (both explicit) both work.
-    elif (name == "send"):
-      if (arg_count == 2): send(a0, a1) else: send(value, a0)
-    elif (name == "take"):
-      if (arg_count == 2): take(a0, a1) else: take(value, a0)
-    elif (name == "skip"):
-      if (arg_count == 2): skip(a0, a1) else: skip(value, a0)
-    elif (name == "take_while") do
-      let arr = if (arg_count == 2): a0 else: value
-      | let f = if (arg_count == 2): a1 else: a0
-      | take_while(arr, fn(item): _apply1(f, item, env) end)
-    end
-    elif (name == "skip_while") do
-      let arr = if (arg_count == 2): a0 else: value
-      | let f = if (arg_count == 2): a1 else: a0
-      | skip_while(arr, fn(item): _apply1(f, item, env) end)
-    end
-
-    # Higher-order collection functions (a1 must be a fn closure)
-    elif (name == "map") do
-      if (is_dict(a1) && a1[:kind] == "fn" && !is_empty(a0)) do
-        let p = if (is_empty(a1[:params])): "_" else: a1[:params][0][:name]
-        | let body = a1[:body]
-        | if (_is_item_literal_bin(body, p)) do
-            let op = body[:op]
-            | let right = body[:right][:val]
-            | map(a0, fn(item): _eval_bin(op, item, right) end)
-          end
-          else do
-            let closure_env = a1[:env]
-            | map(a0, fn(item): _ev(body, item, set(closure_env, p, item)) end)
-          end
-      end
-      else:
-        map(a0, fn(item): _apply1(a1, item, env) end)
-    end
-    elif (name == "filter") do
-      if (is_dict(a1) && a1[:kind] == "fn" && !is_empty(a0)) do
-        let p = if (is_empty(a1[:params])): "_" else: a1[:params][0][:name]
-        | let body = a1[:body]
-        | if (_is_item_literal_bin(body, p)) do
-            let op = body[:op]
-            | let right = body[:right][:val]
-            | filter(a0, fn(item): _eval_bin(op, item, right) end)
-          end
-          else do
-            let closure_env = a1[:env]
-            | filter(a0, fn(item): _ev(body, item, set(closure_env, p, item)) end)
-          end
-      end
-      else:
-        filter(a0, fn(item): _apply1(a1, item, env) end)
-    end
-    elif (name == "flat_map"):
-      flat_map(a0, fn(item): _apply1(a1, item, env) end)
-    elif (name == "sort_by"):
-      sort_by(a0, fn(item): _apply1(a1, item, env) end)
-    elif (name == "group_by"):
-      group_by(a0, fn(item): _apply1(a1, item, env) end)
-    elif (name == "fold"):
-      _fold(a0, a1, a2, env)
-    elif (name == "each"):
-      each(a0, fn(item): _apply1(a1, item, env) end)
-    elif (name == "any"):
-      any(a0, fn(item): _apply1(a1, item, env) end)
-    elif (name == "all"):
-      all(a0, fn(item): _apply1(a1, item, env) end)
-
-    # Array mutation helpers
-    elif (name == "get"):   get(a0, a1)
-    elif (name == "set"):   set(a0, a1, a2)
-    elif (name == "del"):   del(a0, a1)
-    elif (name == "push"):  a0 + [a1]
-    elif (name == "pop"):   a0[0:len(a0) - 1]
-
-    # String operations
-    elif (name == "contains"):     contains(a0, a1)
-    elif (name == "starts_with"):  starts_with(a0, a1)
-    elif (name == "ends_with"):    ends_with(a0, a1)
-    elif (name == "replace"):      replace(a0, a1, a2)
-    elif (name == "gsub"):         gsub(a0, a1, a2)
-    elif (name == "split"):        split(a0, a1)
-    elif (name == "join"):         join(a0, if (is_none(a1)): "" else: a1)
-    elif (name == "trim"):         trim(a0)
-    elif (name == "ltrim"):        ltrim(a0)
-    elif (name == "rtrim"):        rtrim(a0)
-    elif (name == "upper"):        upcase(a0)
-    elif (name == "lower"):        downcase(a0)
-    elif (name == "regex_match"):  regex_match(a0, a1)
-
-    # Math
-    elif (name == "abs"):   abs(a0)
-    elif (name == "floor"): floor(a0)
-    elif (name == "ceil"):  ceil(a0)
-    elif (name == "round"): round(a0)
-    elif (name == "min"):
-      if (arg_count == 1): first(sort(a0))
-      else: min(a0, a1)
-    elif (name == "max"):
-      if (arg_count == 1): last(sort(a0))
-      else: max(a0, a1)
-    elif (name == "sqrt"):  sqrt(a0)
-    elif (name == "log"):   ln(a0)
-
-    # Node / markdown operations
-    elif (name == "select") do
-      let pred_fn = a0
-      | filter(if (is_array(value)): value else: [value], fn(node): _apply1(pred_fn, node, env) end)
-    end
-    elif (name == "attr"):   attr(a0, a1)
-    elif (name == "set_attr"): set_attr(a0, a1, a2)
-    elif (name == "to_md_text"): to_md_text(a0)
-    elif (name == "to_md_list"): to_md_list(a0, a1)
-    elif (name == "to_html"): to_html(a0)
-
-    # Markdown construction and moku-compatible formatting filters.  The
-    # short names take their value from the pipeline (`title | h1`), while the
-    # `to_*` names retain mq's explicit-argument API.
-    elif (name == "to_h"):          to_h(a0, a1)
-    elif (name == "to_blockquote"): to_blockquote(a0)
-    elif (name == "to_strong"):     to_strong(a0)
-    elif (name == "to_em"):         to_em(a0)
-    elif (name == "to_delete"):     to_delete(a0)
-    elif (name == "to_code"):       to_code(a0, a1)
-    elif (name == "to_code_inline"): to_code_inline(a0)
-    elif (name == "h1"): to_h(a0, 1)
-    elif (name == "h2"): to_h(a0, 2)
-    elif (name == "h3"): to_h(a0, 3)
-    elif (name == "h4"): to_h(a0, 4)
-    elif (name == "h5"): to_h(a0, 5)
-    elif (name == "h6"): to_h(a0, 6)
-    elif (name == "blockquote"): to_blockquote(a0)
-    elif (name == "bold"):       to_strong(a0)
-    elif (name == "italic"):     to_em(a0)
-    elif (name == "strike"):     to_delete(a0)
-    elif (name == "code_inline"): to_code_inline(a0)
-    elif (name == "code"):        to_code(value, a0)
-    elif (name == "wikilink"):    _moku_wikilink(a0)
-    elif (name == "yaml_property"): _moku_yaml_property(value, a0)
-
-    # Control
-    elif (name == "error"): error(a0)
-    elif (name == "debug"): debug(a0)
-    elif (name == "env"):   env
-
-    else do
-      # Try to look up as user-defined function in env
-      let fn_val = env[name]
-      | if (is_none(fn_val)):
-          error("Unknown function: " + name)
-        else:
-          _call_user_fn(fn_val, args_vals, value, env)
-    end
+  let n = len(args_vals)
+  | let impl = _builtin_impl(name)
+  | impl(if (n > 0): args_vals[0] else: value,
+      if (n > 1): args_vals[1] else: None,
+      if (n > 2): args_vals[2] else: None,
+      n, value, env)
 end
 
-## Call a user-defined function (def or fn closure) with a list of arg values.
-## Params are {name, default} pairs; a missing trailing arg falls back to its
-## default expression (evaluated in the call env built up so far, so later
-## defaults may reference earlier params) or None if there is no default.
+# Call a user-defined function (def or fn closure) with a list of arg values.
+# Params are {name, default} pairs; a missing trailing arg falls back to its
+# default expression (evaluated in the call env built up so far, so later
+# defaults may reference earlier params) or None if there is no default.
 def _call_user_fn(fn_val, args_vals, value, env):
   let params = fn_val[:params]
   | let count = len(params)
   | let arg_count = len(args_vals)
   | if (count >= 8 && (arg_count >= count || (arg_count >= 64 && len(fn_val[:env]) >= 128))) do
-      # Supplied arguments form a prefix, so bind them in one pass. Missing
-      # arguments still use sequential set() calls: each default expression
-      # can read the bindings made by earlier defaults.
-      let supplied = if (arg_count < count): arg_count else: count
-      | let self_entry = if (is_none(fn_val[:name])): [] else: [[fn_val[:name], fn_val]]
-      | let bindings = foreach (i, range(0, supplied - 1)):
-          [params[i][:name], args_vals[i]]
-        end
-      | var call_env = dict(entries(fn_val[:env]) + self_entry + bindings)
-      | var i = supplied
-      | while (i < count):
-          let p = params[i]
-          | let arg_val = if (!is_none(p[:default])): _ev(p[:default], value, call_env)
-                          else: None
-          | call_env = set(call_env, p[:name], arg_val)
-          | i += 1
-        end
-      | _ev(fn_val[:body], value, call_env)
-    end
+        # Supplied arguments form a prefix, so bind them in one pass. Missing
+        # arguments still use sequential set() calls: each default expression
+        # can read the bindings made by earlier defaults.
+        let supplied = if (arg_count < count): arg_count else: count
+        | let self_entry = if (fn_val[:name] == None): [] else: [[fn_val[:name], fn_val]]
+        | let bindings = foreach (i, range(0, supplied - 1)):
+            [params[i][:name], args_vals[i]]
+          end
+        | var call_env = dict(entries(fn_val[:env]) + self_entry + bindings)
+        | var i = supplied
+        | while (i < count):
+            let p = params[i]
+            | let arg_val = if (p[:default] != None): _call_default(fn_val, i, value, call_env)
+              else: None
+            | call_env = set(call_env, p[:name], arg_val)
+            | i += 1
+          end
+        | _call_body(fn_val, value, call_env)
+      end
     else do
-      var call_env = fn_val[:env]
-      | if (!is_none(fn_val[:name])):
-          call_env = _env_set(call_env, fn_val[:name], fn_val)
-      | var i = 0
-      | while (i < count):
-          let p = params[i]
-          | let arg_val = if (i < arg_count): args_vals[i]
-                          elif (!is_none(p[:default])): _ev(p[:default], value, call_env)
-                          else: None
-          | call_env = set(call_env, p[:name], arg_val)
-          | i += 1
-        end
-      | _ev(fn_val[:body], value, call_env)
-    end
+        var call_env = fn_val[:env]
+        | if (fn_val[:name] != None):
+            call_env = _env_set(call_env, fn_val[:name], fn_val)
+        | var i = 0
+        | while (i < count):
+            let p = params[i]
+            | let arg_val = if (i < arg_count): args_vals[i]
+              elif (p[:default] != None): _call_default(fn_val, i, value, call_env)
+              else: None
+            | call_env = set(call_env, p[:name], arg_val)
+            | i += 1
+          end
+        | _call_body(fn_val, value, call_env)
+      end
 end
 
 # ── conversion operator (@) ─────────────────────────────────────────────────
 
-## real mq's atoms (`:h1`, `:base64`, ...) are a distinct Symbol runtime type
-## that the host `@` operator switches on; mqmq's own atom nodes evaluate to
-## plain strings instead, so `@` can't just delegate to the host operator for
-## symbol-style targets. Reimplemented from scratch using mq's own string /
-## hashing / encoding builtins so both `x @ :h1` and `x @ "#"` style targets
-## (mqmq atoms and real mq's plain-string targets alike) work the same way.
+# real mq's atoms (`:h1`, `:base64`, ...) are a distinct Symbol runtime type
+# that the host `@` operator switches on; mqmq's own atom nodes evaluate to
+# plain strings instead, so `@` can't just delegate to the host operator for
+# symbol-style targets. Reimplemented from scratch using mq's own string /
+# hashing / encoding builtins so both `x @ :h1` and `x @ "#"` style targets
+# (mqmq atoms and real mq's plain-string targets alike) work the same way.
 def _is_url_or_path(s):
   !is_empty(regex_match(s, "^(https?://|\\./|\\.\\./|/)"))
 end
 
 def _eval_convert(input, target):
   let s = to_string(input)
-  | if (target == "h1" || target == "#"):           "# " + s
-    elif (target == "h2" || target == "##"):        "## " + s
-    elif (target == "h3" || target == "###"):       "### " + s
-    elif (target == "h4" || target == "####"):      "#### " + s
-    elif (target == "h5" || target == "#####"):     "##### " + s
-    elif (target == "h6" || target == "######"):    "###### " + s
-    elif (target == ">"):        "> " + s
-    elif (target == "-"):        "- " + s
-    elif (target == "~~"):       "~~" + s + "~~"
-    elif (target == "**"):       "**" + s + "**"
-    elif (target == "--"):       "---"
-    elif (target == "base64"):   base64(s)
-    elif (target == "md5"):      md5(s)
-    elif (target == "sha256"):   sha256(s)
-    elif (target == "uri"):      url_encode(s)
-    elif (target == "urid"):     url_decode(s)
-    elif (target == "html"):     to_html(input)
-    elif (target == "text"):     to_text(input)
+  | if (target == "h1" || target == "#"): "# " + s
+    elif (target == "h2" || target == "##"): "## " + s
+    elif (target == "h3" || target == "###"): "### " + s
+    elif (target == "h4" || target == "####"): "#### " + s
+    elif (target == "h5" || target == "#####"): "##### " + s
+    elif (target == "h6" || target == "######"): "###### " + s
+    elif (target == ">"): "> " + s
+    elif (target == "-"): "- " + s
+    elif (target == "~~"): "~~" + s + "~~"
+    elif (target == "**"): "**" + s + "**"
+    elif (target == "--"): "---"
+    elif (target == "base64"): base64(s)
+    elif (target == "md5"): md5(s)
+    elif (target == "sha256"): sha256(s)
+    elif (target == "uri"): url_encode(s)
+    elif (target == "urid"): url_decode(s)
+    elif (target == "html"): to_html(input)
+    elif (target == "text"): to_text(input)
     elif (_is_url_or_path(target)): "[" + s + "](" + target + ")"
     else: error("Invalid convert: " + to_string(target))
 end
@@ -597,620 +587,959 @@ end
 # ── binary operator evaluation ────────────────────────────────────────────────
 
 def _eval_bin(op, left_val, right_val):
-  if (op == "+"):  left_val + right_val
-    elif (op == "-"):  left_val - right_val
-    elif (op == "*"):  left_val * right_val
-    elif (op == "/"):  left_val / right_val
-    elif (op == "%"):  left_val % right_val
-    elif (op == "=="):  left_val == right_val
-    elif (op == "!="):  left_val != right_val
-    elif (op == "<"):   left_val < right_val
-    elif (op == "<="):  left_val <= right_val
-    elif (op == ">"):   left_val > right_val
-    elif (op == ">="):  left_val >= right_val
-    elif (op == "&&"):  left_val && right_val
-    elif (op == "||"):  left_val || right_val
-    elif (op == "??"):  if (is_none(left_val)): right_val else: left_val
-    elif (op == "<<"):  left_val << right_val
-    elif (op == ">>"):  left_val >> right_val
-    elif (op == "=~"):  is_regex_match(left_val, right_val)
-    elif (op == "!~"):  is_not_regex_match(left_val, right_val)
-    elif (op == ".."):  left_val..right_val
-    elif (op == "@"):   _eval_convert(left_val, right_val)
-    else: error("Unknown binary operator: " + op)
+  if (op == "+"): left_val + right_val
+  elif (op == "-"): left_val - right_val
+  elif (op == "*"): left_val * right_val
+  elif (op == "/"): left_val / right_val
+  elif (op == "%"): left_val % right_val
+  elif (op == "=="): left_val == right_val
+  elif (op == "!="): left_val != right_val
+  elif (op == "<"): left_val < right_val
+  elif (op == "<="): left_val <= right_val
+  elif (op == ">"): left_val > right_val
+  elif (op == ">="): left_val >= right_val
+  elif (op == "&&"): left_val && right_val
+  elif (op == "||"): left_val || right_val
+  elif (op == "??"): if (left_val == None): right_val else: left_val
+  elif (op == "<<"): left_val << right_val
+  elif (op == ">>"): left_val >> right_val
+  elif (op == "=~"): is_regex_match(left_val, right_val)
+  elif (op == "!~"): is_not_regex_match(left_val, right_val)
+  elif (op == ".."): left_val..right_val
+  elif (op == "@"): _eval_convert(left_val, right_val)
+  else: error("Unknown binary operator: " + op)
 end
 
-# ── value-only evaluation ─────────────────────────────────────────────────────
+# ── compilation to closures ───────────────────────────────────────────────────
+#
+# Evaluating an AST by walking it pays, at every node and every evaluation, for
+# a dispatch on the node kind, several dict field reads, and a {val, env}
+# result. Instead, the AST is compiled once into closures: dispatch and field
+# reads happen at compile time, and a compiled node is a single call.
+#
+# _comp(ast) returns a [pure, code] pair. A pure node never changes the
+# environment and never raises a break/continue signal, so its code is
+# `fn(value, env)` returning the value alone. Any other node's code returns
+# mq_eval's {val, env[, ctrl]} result. Purity is derived bottom-up, so
+# `n - 1`, an `if` over pure branches, or a pipe of pure stages all take the
+# value-only path.
 
-## Evaluate an AST node for its value alone. Most nodes are leaves, calls, or
-## operators, and returning their value directly avoids allocating a
-## {val, env} pair per node. Kinds that can change the env or carry a
-## break/continue signal fall back to mq_eval; callers of _ev discard both.
-def _ev(ast, value, env):
-  let k = ast[:kind]
-  | if (k == "ident") do
-      let v = env[ast[:name]]
-      | if (is_none(v) && !has(env, ast[:name])): _eval_builtin(ast[:name], [], value, env) else: v
-    end
-    elif (k == "num" || k == "str" || k == "bool"): ast[:val]
-    elif (k == "call"): _ev_call(ast, value, env)
-    elif (k == "bin"): _ev_bin(ast, value, env)
-    elif (k == "bin_chain"): _eval_flat_bin_chain(ast, value, env)[:val]
-    elif (k == "if"): _ev_if(ast, value, env)
-    elif (k == "self" || k == "dot"): value
-    elif (k == "none"): None
-    elif (k == "un") do
-      let v = _ev(ast[:expr], value, env)
-      | if (ast[:op] == "!"): !v
-        elif (ast[:op] == "-"): 0 - v
-        else: v
-    end
-    elif (k == "dkey"): _ev(ast[:base], value, env)[ast[:key]]
-    # Collection literals do not export bindings from their elements. Return
-    # their values directly when a parent expression does not need an env.
-    elif (k == "arr"): map(ast[:items], fn(item): _ev(item, value, env) end)
-    elif (k == "dict"):
-      dict(map(ast[:pairs], fn(pair):
-        [_ev(pair[:key], value, env), _ev(pair[:val], value, env)]
-      end))
-    else: mq_eval(ast, value, env)[:val]
-end
-
-def _ev_call(ast, value, env):
-  let args = ast[:args]
-  | let n = len(args)
-  | let named = env[ast[:name]]
-  # A supplied single argument needs neither an argument array nor the
-  # general parameter/default binding loop. Keep the recursive name binding
-  # before the parameter binding so a parameter can shadow its own function.
-  | if (n == 1 && is_dict(named) && named[:kind] == "fn" && len(named[:params]) == 1) do
-      let arg_val = _ev(args[0], value, env)
-      | let fn_name = named[:name]
-      | let base_env = if (is_none(fn_name)): named[:env]
-                       else: set(named[:env], fn_name, named)
-      | _ev(named[:body], value, set(base_env, named[:params][0][:name], arg_val))
-    end
-    else do
-      let args_vals = if (n == 0): []
-                        elif (n == 1): [_ev(args[0], value, env)]
-                        else: map(args, fn(a): _ev(a, value, env) end)
-      | if (is_dict(named) && named[:kind] == "fn"):
-          _call_user_fn(named, args_vals, value, env)
-        else:
-          _eval_builtin(ast[:name], args_vals, value, env)
-    end
-end
-
-## The right operand still sees any bindings the left operand made, as in
-## mq_eval's "bin" case.
-def _ev_bin(ast, value, env):
-  let left = ast[:left]
-  | let op = ast[:op]
-  | if (_KEEPS_ENV[left[:kind]]) do
-      let lv = _ev(left, value, env)
-      # Common arithmetic/comparison operators can use the host operation
-      # directly; the remaining operators retain the shared dispatch below.
-      | if (op == "+"): lv + _ev(ast[:right], value, env)
-        elif (op == "-"): lv - _ev(ast[:right], value, env)
-        elif (op == "<"): lv < _ev(ast[:right], value, env)
-        elif (op == "&&" && !lv): false
-        elif (op == "||" && lv): lv
-        elif (op == "??" && !is_none(lv)): lv
-        else: _eval_bin(op, lv, _ev(ast[:right], value, env))
-    end
-    else do
-      let lr = mq_eval(left, value, env)
-      | let lv = lr[:val]
-      | if (op == "&&" && !lv): false
-        elif (op == "||" && lv): lv
-        elif (op == "??" && !is_none(lv)): lv
-        else: _eval_bin(op, lv, _ev(ast[:right], value, lr[:env]))
-    end
-end
-
-def _ev_if(ast, value, env):
-  if (_ev(ast[:cond], value, env)): _ev(ast[:then], value, env)
+# Value-only code for a compiled node (drops a non-pure node's env and signal).
+def _as_v(c):
+  if (c[0]): c[1]
   else do
-    let elifs = ast[:elifs]
-    | if (is_empty(elifs)):
-        if (is_none(ast[:else_br])): None else: _ev(ast[:else_br], value, env)
-      else do
-        let n = len(elifs)
-        | var i = 0
-        | var branch = ast[:else_br]
-        | while (i < n):
-            let e = elifs[i]
-            | if (_ev(e[:cond], value, env)) do
-                branch = e[:body]
-                | i = n
-              end
-              else: i += 1
-          end
-        | if (is_none(branch)): None else: _ev(branch, value, env)
-      end
+      let run = c[1]
+      | fn(value, env): run(value, env)[:val] end
+    end
+end
+
+# {val, env} code for a compiled node.
+def _as_x(c):
+  if (c[0]) do
+      let run = c[1]
+      | fn(value, env): {val: run(value, env), env: env} end
+    end
+  else: c[1]
+end
+
+def _comp_const(v):
+  [true, fn(value, env): v end]
+end
+
+def _comp_ident(ast):
+  let name = ast[:name]
+  | [true, fn(value, env):
+      let v = env[name]
+      | if (v == None && !has(env, name)): _eval_builtin(name, [], value, env) else: v
+    end]
+end
+
+# ── calls ─────────────────────────────────────────────────────────────────────
+
+# A user function's value-only body code. Functions built by `fn`/`def` carry
+# theirs; one assembled by hand from AST nodes is compiled on first use.
+def _body_code(fn_val):
+  let run = fn_val[:code]
+  | if (run == None): _as_v(_comp(fn_val[:body])) else: run
+end
+
+# Value-only code for the default expression of the i-th parameter.
+def _default_code(fn_val, i):
+  let compiled = fn_val[:dflt]
+  | if (compiled == None): _as_v(_comp(fn_val[:params][i][:default])) else: compiled[i]
+end
+
+# Run a user function's body / a parameter's default expression.
+def _call_body(fn_val, value, env):
+  let run = _body_code(fn_val)
+  | run(value, env)
+end
+
+def _call_default(fn_val, i, value, env):
+  let run = _default_code(fn_val, i)
+  | run(value, env)
+end
+
+def _compile_defaults(params):
+  foreach (p, params):
+    if (p[:default] == None): None else: _as_v(_comp(p[:default]))
   end
 end
 
-## Like mq_eval, but without its {val, env} result for a node that keeps its
-## env, so a binding's value costs one pair instead of two.
-def _eval_keep_env(ast, value, env):
-  if (_KEEPS_ENV[ast[:kind]]): {val: _ev(ast, value, env), env: env}
-  else: mq_eval(ast, value, env)
+# Call a user function with one already-evaluated argument. A one-parameter
+# function needs neither an argument array nor the general binding loop. The
+# recursive name binding precedes the parameter so a parameter can shadow it.
+def _call_user_fn1(fn_val, arg, value, env):
+  let params = fn_val[:params]
+  | if (len(params) == 1) do
+        let fn_name = fn_val[:name]
+        | let base_env = if (fn_name == None): fn_val[:env]
+          else: set(fn_val[:env], fn_name, fn_val)
+        | let run = fn_val[:code]
+        | let call_env = set(base_env, params[0][:name], arg)
+        | if (run == None): _call_body(fn_val, value, call_env)
+          else: run(value, call_env)
+      end
+    else:
+      _call_user_fn(fn_val, [arg], value, env)
 end
 
-## General "bin" case: bindings made by the left operand are visible to the
-## right operand and in the result env.
-def _eval_bin_node(ast, value, env):
-  let lr = _eval_keep_env(ast[:left], value, env)
-  | let op = ast[:op]
-  | if (op == "&&" && !lr[:val]):
-      {val: false, env: lr[:env]}
-    elif (op == "||" && lr[:val]):
-      {val: lr[:val], env: lr[:env]}
-    elif (op == "??" && !is_none(lr[:val])):
-      {val: lr[:val], env: lr[:env]}
-    elif (_KEEPS_ENV[ast[:right][:kind]]):
-      {val: _eval_bin(op, lr[:val], _ev(ast[:right], value, lr[:env])), env: lr[:env]}
-    else do
-      let rr = mq_eval(ast[:right], value, lr[:env])
-      | {val: _eval_bin(op, lr[:val], rr[:val]), env: rr[:env]}
+# A call site resolves its built-in once, when compiled. At run time a user
+# function bound under the same name in env takes precedence. Calls of up to
+# three arguments pass them straight to the implementation without building
+# an argument array.
+def _comp_call(ast):
+  let name = ast[:name]
+  | let impl = _builtin_impl(name)
+  | let args = foreach (a, ast[:args]): _as_v(_comp(a)) end
+  | let n = len(args)
+  | if (n == 0):
+      [true, fn(value, env):
+        let named = env[name]
+        | if (named != None && has(named, "kind") && named[:kind] == "fn"):
+            _call_user_fn(named, [], value, env)
+          else: impl(value, None, None, 0, value, env)
+      end]
+    elif (n == 1) do
+        let a0 = args[0]
+        | [true, fn(value, env):
+            let named = env[name]
+            | let x = a0(value, env)
+            | if (named != None && has(named, "kind") && named[:kind] == "fn"):
+                _call_user_fn1(named, x, value, env)
+              else: impl(x, None, None, 1, value, env)
+          end]
+      end
+    elif (n == 2) do
+        let a0 = args[0]
+        | let a1 = args[1]
+        | [true, fn(value, env):
+            let named = env[name]
+            | let x = a0(value, env)
+            | let y = a1(value, env)
+            | if (named != None && has(named, "kind") && named[:kind] == "fn"):
+                _call_user_fn(named, [x, y], value, env)
+              else: impl(x, y, None, 2, value, env)
+          end]
+      end
+    elif (n == 3) do
+        let a0 = args[0]
+        | let a1 = args[1]
+        | let a2 = args[2]
+        | [true, fn(value, env):
+            let named = env[name]
+            | let x = a0(value, env)
+            | let y = a1(value, env)
+            | let z = a2(value, env)
+            | if (named != None && has(named, "kind") && named[:kind] == "fn"):
+                _call_user_fn(named, [x, y, z], value, env)
+              else: impl(x, y, z, 3, value, env)
+          end]
+      end
+    else:
+      [true, fn(value, env):
+        let named = env[name]
+        | let args_vals = foreach (a, args): a(value, env) end
+        | if (named != None && has(named, "kind") && named[:kind] == "fn"):
+            _call_user_fn(named, args_vals, value, env)
+          else: impl(args_vals[0], args_vals[1], args_vals[2], n, value, env)
+      end]
+end
+
+# ── operators ─────────────────────────────────────────────────────────────────
+
+# Value-only code for `left OP right` over value-only operands. Common
+# operators use the host operation directly; the rest share _eval_bin.
+def _bin_v(op, l, r):
+  if (op == "+"): fn(value, env): l(value, env) + r(value, env) end
+  elif (op == "-"): fn(value, env): l(value, env) - r(value, env) end
+  elif (op == "*"): fn(value, env): l(value, env) * r(value, env) end
+  elif (op == "/"): fn(value, env): l(value, env) / r(value, env) end
+  elif (op == "%"): fn(value, env): l(value, env) % r(value, env) end
+  elif (op == "=="): fn(value, env): l(value, env) == r(value, env) end
+  elif (op == "!="): fn(value, env): l(value, env) != r(value, env) end
+  elif (op == "<"): fn(value, env): l(value, env) < r(value, env) end
+  elif (op == "<="): fn(value, env): l(value, env) <= r(value, env) end
+  elif (op == ">"): fn(value, env): l(value, env) > r(value, env) end
+  elif (op == ">="): fn(value, env): l(value, env) >= r(value, env) end
+  elif (op == "&&"):
+    fn(value, env):
+      let lv = l(value, env)
+      | if (!lv): false else: _eval_bin(op, lv, r(value, env))
     end
+  elif (op == "||"):
+    fn(value, env):
+      let lv = l(value, env)
+      | if (lv): lv else: _eval_bin(op, lv, r(value, env))
+    end
+  elif (op == "??"):
+    fn(value, env):
+      let lv = l(value, env)
+      | if (lv != None): lv else: _eval_bin(op, lv, r(value, env))
+    end
+  else: fn(value, env): _eval_bin(op, l(value, env), r(value, env)) end
 end
 
-## Evaluate a left-associated binary chain without recursively evaluating
-## each intermediate bin node. Each stack link is a two-item array; right
-## operands still see earlier bindings.
-def _eval_bin_chain(ast, value, env):
-  var stages = None
+# Peel a left-associated chain of "bin" nodes into its first operand and an
+# array of {op, right} stages, without recursing through the nesting.
+def _unroll_bin(ast):
+  var reversed = None
+  | var count = 0
   | var cursor = ast
   | while (cursor[:kind] == "bin"):
-      stages = [cursor, stages]
+      reversed = [{op: cursor[:op], right: cursor[:right]}, reversed]
       | cursor = cursor[:left]
+      | count += 1
     end
-  | let first = _eval_keep_env(cursor, value, env)
-  | var acc = first[:val]
-  | var cur_env = first[:env]
-  | while (!is_none(stages)):
-      let stage = stages[0]
-      | let op = stage[:op]
-      # A short-circuit leaves acc and cur_env unchanged.
-      | if (op == "&&" && !acc): acc = false
-        elif (op == "||" && acc): None
-        elif (op == "??" && !is_none(acc)): None
-        else do
-          let right = stage[:right]
-          | let right_kind = right[:kind]
-          | if (_KEEPS_ENV[right_kind]) do
-              # Numeric literals already hold their value in the AST.
-              let rv = if (right_kind == "num"): right[:val]
-                       else: _ev(right, value, cur_env)
-              | if (op == "+"): acc = acc + rv
-                else: acc = _eval_bin(op, acc, rv)
-            end
-            else do
-              let rr = mq_eval(right, value, cur_env)
-              | acc = _eval_bin(op, acc, rr[:val])
-              | cur_env = rr[:env]
-            end
-        end
-      | stages = stages[1]
+  | let stages = foreach (i, range(0, count - 1)):
+      let stage = reversed[0]
+      | reversed = reversed[1]
+      | stage
     end
-  | {val: acc, env: cur_env}
+  | {first: cursor, stages: stages}
 end
 
-## The parser stores long left-associated binary chains as a flat stage array.
-## This avoids rebuilding the traversal stack for each evaluation.
-def _eval_flat_bin_chain(ast, value, env):
-  let first = _eval_keep_env(ast[:first], value, env)
-  | var acc = first[:val]
-  | var cur_env = first[:env]
-  | let stages = ast[:stages]
-  | let n = len(stages)
-  | var i = 0
-  | while (i < n):
-      let stage = stages[i]
-      | let op = stage[:op]
-      | if (op == "&&" && !acc): acc = false
-        elif (op == "||" && acc): None
-        elif (op == "??" && !is_none(acc)): None
-        else do
-          let right = stage[:right]
-          | let right_kind = right[:kind]
-          | if (_KEEPS_ENV[right_kind]) do
-              let rv = if (right_kind == "num"): right[:val]
-                       else: _ev(right, value, cur_env)
-              | if (op == "+"): acc = acc + rv
-                else: acc = _eval_bin(op, acc, rv)
-            end
-            else do
-              let rr = mq_eval(right, value, cur_env)
-              | acc = _eval_bin(op, acc, rr[:val])
-              | cur_env = rr[:env]
-            end
-        end
-      | i += 1
-    end
-  | {val: acc, env: cur_env}
+# Value-only code for `left OP <number>` where OP is an eager operator (one
+# of _ITEM_LITERAL_BIN_OPS): the literal is read from the AST once, so the
+# right operand costs no call.
+def _bin_v_const(op, l, r):
+  if (op == "+"): fn(value, env): l(value, env) + r end
+  elif (op == "-"): fn(value, env): l(value, env) - r end
+  elif (op == "*"): fn(value, env): l(value, env) * r end
+  elif (op == "/"): fn(value, env): l(value, env) / r end
+  elif (op == "%"): fn(value, env): l(value, env) % r end
+  elif (op == "=="): fn(value, env): l(value, env) == r end
+  elif (op == "!="): fn(value, env): l(value, env) != r end
+  elif (op == "<"): fn(value, env): l(value, env) < r end
+  elif (op == "<="): fn(value, env): l(value, env) <= r end
+  elif (op == ">"): fn(value, env): l(value, env) > r end
+  else: fn(value, env): l(value, env) >= r end
 end
 
-## Parsed pipes store their stages in source order. Evaluate the first stage
-## once, then walk the flat array without rebuilding a traversal stack for
-## every call to a compiled query.
-def _eval_pipe_stages(stages, value, env):
-  let first = mq_eval(stages[0], value, env)
-  | var result_val = first[:val]
-  | var result_env = first[:env]
-  | var signal = _ctrl(first)
-  | var i = 1
-  | let n = len(stages)
-  | while (i < n && signal == "none"):
-      let stage = stages[i]
-      | let stage_kind = stage[:kind]
-      | if (stage_kind == "dot" || stage_kind == "self"): None
-        elif (_KEEPS_ENV[stage_kind]):
-          result_val = _ev(stage, result_val, result_env)
-        else do
-          let result = mq_eval(stage, result_val, result_env)
-          | result_val = result[:val]
-          | result_env = result[:env]
-          | signal = _ctrl(result)
-        end
-      | i += 1
-    end
-  | if (signal == "none"): {val: result_val, env: result_env}
-    else: {val: result_val, env: result_env, ctrl: signal}
-end
-
-# ── main evaluator ────────────────────────────────────────────────────────────
-
-## Evaluate an AST node, returning {val: <result>, env: <env>}.
-def mq_eval(ast, value, env):
-  let k = ast[:kind]
-  | if (k == "ident") do
-      let v = env[ast[:name]]
-      | if (is_none(v) && !has(env, ast[:name])):
-          {val: _eval_builtin(ast[:name], [], value, env), env: env}
-        else:
-          {val: v, env: env}
-    end
-    elif (k == "call"): {val: _ev_call(ast, value, env), env: env}
-    elif (k == "bin"):
-      if (ast[:left][:kind] == "bin" && ast[:left][:left][:kind] == "bin"):
-        _eval_bin_chain(ast, value, env)
-      elif (_KEEPS_ENV[ast[:left][:kind]] && _KEEPS_ENV[ast[:right][:kind]]):
-        {val: _ev_bin(ast, value, env), env: env}
-      else:
-        _eval_bin_node(ast, value, env)
-    elif (k == "bin_chain"): _eval_flat_bin_chain(ast, value, env)
-    elif (k == "pipe") do
-      if (!is_none(ast[:stages])):
-        _eval_pipe_stages(ast[:stages], value, env)
-      elif (ast[:left][:kind] != "pipe") do
-        let lr = mq_eval(ast[:left], value, env)
-        | if (_ctrl(lr) != "none"): lr
-          else: mq_eval(ast[:right], lr[:val], lr[:env])
+def _comp_bin(ast):
+  let left = ast[:left]
+  | if (left[:kind] == "bin" && left[:left][:kind] == "bin") do
+        let chain = _unroll_bin(ast)
+        | _comp_bin_chain(chain[:first], chain[:stages])
       end
-      else do
-        var stages = None
-        | var cursor = ast
-        # Two-item array links are cheaper than tiny dictionaries here.
-        | while (cursor[:kind] == "pipe"):
-            stages = [cursor[:right], stages]
-            | cursor = cursor[:left]
+    else do
+        let lc = _comp(left)
+        | let rc = _comp(ast[:right])
+        | let op = ast[:op]
+        | if (lc[0] && rc[0] && ast[:right][:kind] == "num" && _ITEM_LITERAL_BIN_OPS[op]):
+            [true, _bin_v_const(op, lc[1], ast[:right][:val])]
+          elif (lc[0] && rc[0]):
+            [true, _bin_v(op, lc[1], rc[1])]
+          else do
+              # Bindings made by the left operand are visible to the right one and
+              # in the result env.
+              let lx = _as_x(lc)
+              | let rpure = rc[0]
+              | let rrun = rc[1]
+              | [false, fn(value, env):
+                  let lr = lx(value, env)
+                  | let lv = lr[:val]
+                  | if (op == "&&" && !lv): {val: false, env: lr[:env]}
+                    elif (op == "||" && lv): {val: lv, env: lr[:env]}
+                    elif (op == "??" && lv != None): {val: lv, env: lr[:env]}
+                    elif (rpure): {val: _eval_bin(op, lv, rrun(value, lr[:env])), env: lr[:env]}
+                    else do
+                        let rr = rrun(value, lr[:env])
+                        | {val: _eval_bin(op, lv, rr[:val]), env: rr[:env]}
+                      end
+                end]
+            end
+      end
+end
+
+# A long binary chain is a first operand plus a flat array of {op, right}
+# stages, evaluated by a loop rather than by nested closure calls.
+# Short-circuiting leaves the accumulator and env unchanged; a numeric
+# literal operand is read straight from the AST.
+def _comp_bin_chain(first_ast, stage_asts):
+  let fc = _comp(first_ast)
+  | var all_pure = fc[0]
+  | let stages = foreach (s, stage_asts):
+      let right = s[:right]
+      | if (right[:kind] == "num"): [s[:op], true, true, right[:val]]
+        else do
+            let rc = _comp(right)
+            | if (!rc[0]): all_pure = false
+            | [s[:op], rc[0], false, rc[1]]
           end
-        | let first = mq_eval(cursor, value, env)
-        | var result_val = first[:val]
-        | var result_env = first[:env]
-        | var signal = _ctrl(first)
-        | while (!is_none(stages) && signal == "none"):
-            let stage = stages[0]
-            | let stage_kind = stage[:kind]
-            # Identity stages leave both the value and environment intact.
-            | if (stage_kind == "dot" || stage_kind == "self"): None
-              elif (_KEEPS_ENV[stage_kind]):
-                result_val = _ev(stage, result_val, result_env)
-              else do
-                let result = mq_eval(stage, result_val, result_env)
-                | result_val = result[:val]
-                | result_env = result[:env]
-                | signal = _ctrl(result)
+    end
+  | let n = len(stages)
+  | if (all_pure) do
+        let f = fc[1]
+        | [true, fn(value, env):
+            var acc = f(value, env)
+            | var i = 0
+            | while (i < n):
+                let st = stages[i]
+                | let op = st[0]
+                | if (op == "&&" && !acc): acc = false
+                  elif (op == "||" && acc): None
+                  elif (op == "??" && acc != None): None
+                  else do
+                      let rv = if (st[2]): st[3] else: st[3](value, env)
+                      | if (op == "+"): acc = acc + rv
+                        else: acc = _eval_bin(op, acc, rv)
+                    end
+                | i += 1
               end
-            | stages = stages[1]
+            | acc
+          end]
+      end
+    else do
+        let fx = _as_x(fc)
+        | [false, fn(value, env):
+            let first = fx(value, env)
+            | var acc = first[:val]
+            | var cur_env = first[:env]
+            | var i = 0
+            | while (i < n):
+                let st = stages[i]
+                | let op = st[0]
+                | if (op == "&&" && !acc): acc = false
+                  elif (op == "||" && acc): None
+                  elif (op == "??" && acc != None): None
+                  elif (st[1]) do
+                      let rv = if (st[2]): st[3] else: st[3](value, cur_env)
+                      | acc = _eval_bin(op, acc, rv)
+                    end
+                  else do
+                      let rr = st[3](value, cur_env)
+                      | acc = _eval_bin(op, acc, rr[:val])
+                      | cur_env = rr[:env]
+                    end
+                | i += 1
+              end
+            | {val: acc, env: cur_env}
+          end]
+      end
+end
+
+def _comp_un(ast):
+  let c = _comp(ast[:expr])
+  | let e = c[1]
+  | let op = ast[:op]
+  | if (c[0]):
+      if (op == "!"): [true, fn(value, env): !e(value, env) end]
+      elif (op == "-"): [true, fn(value, env): 0 - e(value, env) end]
+      else: [true, e]
+    else:
+      [false, fn(value, env):
+        let er = e(value, env)
+        | let v = er[:val]
+        | let nv = if (op == "!"): !v elif (op == "-"): 0 - v else: v
+        | {val: nv, env: er[:env]}
+      end]
+end
+
+# ── indexing ──────────────────────────────────────────────────────────────────
+
+def _comp_idx(ast):
+  let bc = _comp(ast[:base])
+  | let ic = _comp(ast[:index])
+  | if (bc[0] && ic[0]) do
+        let b = bc[1]
+        | let i = ic[1]
+        | [true, fn(value, env): b(value, env)[i(value, env)] end]
+      end
+    else do
+        let bx = _as_x(bc)
+        | let ix = _as_x(ic)
+        | [false, fn(value, env):
+            let br = bx(value, env)
+            | let ir = ix(value, br[:env])
+            | {val: br[:val][ir[:val]], env: ir[:env]}
+          end]
+      end
+end
+
+def _comp_dkey(ast):
+  let bc = _comp(ast[:base])
+  | let key = ast[:key]
+  | let b = bc[1]
+  | if (bc[0]): [true, fn(value, env): b(value, env)[key] end]
+    else:
+      [false, fn(value, env):
+        let br = b(value, env)
+        | {val: br[:val][key], env: br[:env]}
+      end]
+end
+
+def _comp_slice(ast):
+  let bc = _comp(ast[:base])
+  | let fc = _comp(ast[:from])
+  | let has_to = ast[:to] != None
+  | let tc = if (has_to): _comp(ast[:to]) else: _comp_const(None)
+  | if (bc[0] && fc[0] && tc[0]) do
+        let b = bc[1]
+        | let f = fc[1]
+        | let t = tc[1]
+        | [true, fn(value, env):
+            let base = b(value, env)
+            | let from = f(value, env)
+            | let to = if (has_to): t(value, env) else: len(base)
+            | base[from:to]
+          end]
+      end
+    else do
+        let bx = _as_x(bc)
+        | let fx = _as_x(fc)
+        | let tx = _as_x(tc)
+        | [false, fn(value, env):
+            let br = bx(value, env)
+            | let fr = fx(value, br[:env])
+            | let tr = if (has_to): tx(value, fr[:env]) else: {val: len(br[:val]), env: fr[:env]}
+            | {val: br[:val][fr[:val]:tr[:val]], env: tr[:env]}
+          end]
+      end
+end
+
+# ── collection literals and interpolation ─────────────────────────────────────
+
+# [true, value] when `ast` is a literal built only from numbers, strings,
+# booleans, None, atoms, and arrays and dictionaries of those; otherwise
+# [false, None]. Values are immutable, so such a literal is built once, at
+# compile time, and every evaluation returns the same value.
+def _literal(ast):
+  let k = ast[:kind]
+  | if (k == "num" || k == "str" || k == "bool"): [true, ast[:val]]
+    elif (k == "none"): [true, None]
+    elif (k == "atom"): [true, ast[:name]]
+    elif (k == "arr") do
+        var ok = true
+        | let vals = foreach (item, ast[:items]):
+            let r = _literal(item)
+            | if (!r[0]) do
+                  ok = false
+                  | break
+                end
+            | r[1]
           end
-        | if (signal == "none"): {val: result_val, env: result_env}
-          else: {val: result_val, env: result_env, ctrl: signal}
+        | if (ok): [true, vals] else: [false, None]
       end
-    end
-    elif (k == "str"):   {val: ast[:val], env: env}
-    elif (k == "num"):  {val: ast[:val], env: env}
-    elif (k == "bool"): {val: ast[:val], env: env}
-    elif (k == "none"): {val: None, env: env}
-    elif (k == "atom"): {val: ast[:name], env: env}
-    elif (k == "self"): {val: value, env: env}
-    elif (k == "dot"):  {val: value, env: env}
-    elif (k == "nodes"): {val: env["__nodes__"], env: env}
-    elif (k == "sel"):   {val: _eval_sel(ast[:name], value), env: env}
-    elif (k == "if"):    _eval_if_node(ast, value, env)
-    elif (k == "unless"): _eval_unless(ast, value, env)
-    elif (k == "do"):    mq_eval(ast[:body], value, env)
-    elif (k == "fn"):    {val: {kind: "fn", params: ast[:params], body: ast[:body], env: env}, env: env}
-    elif (k == "while" || k == "until"): _eval_cond_loop(ast, value, env, k == "until")
-    elif (k == "foreach"): _eval_foreach(ast, value, env)
+    elif (k == "dict") do
+        var ok = true
+        | let pairs = foreach (p, ast[:pairs]):
+            let key = _literal(p[:key])
+            | let val = _literal(p[:val])
+            | if (!key[0] || !val[0]) do
+                  ok = false
+                  | break
+                end
+            | [key[1], val[1]]
+          end
+        | if (ok): [true, dict(pairs)] else: [false, None]
+      end
+    else: [false, None]
+end
 
-    elif (k == "break") do
-      if (is_none(ast[:val])):
-        {val: value, env: env, ctrl: "break"}
+# Elements are evaluated for their value alone: a literal exports no bindings.
+def _comp_arr(ast):
+  let lit = _literal(ast)
+  | if (lit[0]): _comp_const(lit[1])
+    else: _comp_arr_items(ast)
+end
+
+def _comp_arr_items(ast):
+  let items = foreach (a, ast[:items]): _as_v(_comp(a)) end
+  | let n = len(items)
+  | if (n == 0): [true, fn(value, env): [] end]
+    elif (n == 1) do
+        let a = items[0]
+        | [true, fn(value, env): [a(value, env)] end]
+      end
+    elif (n == 2) do
+        let a = items[0]
+        | let b = items[1]
+        | [true, fn(value, env): [a(value, env), b(value, env)] end]
+      end
+    elif (n == 3) do
+        let a = items[0]
+        | let b = items[1]
+        | let c = items[2]
+        | [true, fn(value, env): [a(value, env), b(value, env), c(value, env)] end]
+      end
+    else: [true, fn(value, env): foreach (c, items): c(value, env) end end]
+end
+
+# The host dict constructor inserts entries in order and replaces duplicate
+# keys without copying the growing dict. Literal keys are fixed at compile
+# time.
+def _comp_dict(ast):
+  let lit = _literal(ast)
+  | if (lit[0]): _comp_const(lit[1])
+    else: _comp_dict_pairs(ast)
+end
+
+def _comp_dict_pairs(ast):
+  let pairs = ast[:pairs]
+  | var literal_keys = true
+  | foreach (p, pairs):
+      if (p[:key][:kind] != "atom" && p[:key][:kind] != "str"): literal_keys = false
+    end
+  | if (literal_keys) do
+        let slots = foreach (p, pairs):
+          [if (p[:key][:kind] == "atom"): p[:key][:name] else: p[:key][:val], _as_v(_comp(p[:val]))]
+        end
+        | [true, fn(value, env): dict(foreach (s, slots): [s[0], s[1](value, env)] end) end]
+      end
+    else do
+        let slots = foreach (p, pairs): [_as_v(_comp(p[:key])), _as_v(_comp(p[:val]))] end
+        | [true, fn(value, env): dict(foreach (s, slots): [s[0](value, env), s[1](value, env)] end) end]
+      end
+end
+
+def _comp_interp(ast):
+  let parts = foreach (s, ast[:segs]):
+    if (s[:kind] == "text"): [false, s[:val]]
+    else: [true, _as_v(_comp(s[:node]))]
+  end
+  | [true, fn(value, env):
+      join(foreach (p, parts):
+        if (p[0]): to_string(p[1](value, env)) else: p[1]
+      end, "")
+    end]
+end
+
+# ── conditionals ──────────────────────────────────────────────────────────────
+
+# Index of the first truthy condition, or n when none is.
+def _first_true(conds, n, value, env):
+  var i = 0
+  | while (i < n && !conds[i](value, env)): i += 1 end
+  | i
+end
+
+def _comp_if(ast):
+  let cond = _as_v(_comp(ast[:cond]))
+  | let tc = _comp(ast[:then])
+  | let elifs = if (ast[:elifs] == None): [] else: ast[:elifs]
+  | let ne = len(elifs)
+  | let ac = if (ast[:else_br] == None): None else: _comp(ast[:else_br])
+  | var pure = tc[0] && (ac == None || ac[0])
+  | let conds = foreach (e, elifs): _as_v(_comp(e[:cond])) end
+  | let ecs = foreach (e, elifs):
+      let c = _comp(e[:body])
+      | if (!c[0]): pure = false
+      | c
+    end
+  | if (pure) do
+        let t = tc[1]
+        | let a = if (ac == None): None else: ac[1]
+        | if (ne == 0):
+            if (a == None): [true, fn(value, env): if (cond(value, env)): t(value, env) else: None end]
+            else: [true, fn(value, env): if (cond(value, env)): t(value, env) else: a(value, env) end]
+          else do
+              let bodies = foreach (c, ecs): c[1] end
+              | [true, fn(value, env):
+                  if (cond(value, env)): t(value, env)
+                  else do
+                      let i = _first_true(conds, ne, value, env)
+                      | if (i < ne): bodies[i](value, env)
+                        elif (a == None): None
+                        else: a(value, env)
+                    end
+                end]
+            end
+      end
+    else do
+        let tx = _as_x(tc)
+        | let bodies = foreach (c, ecs): _as_x(c) end
+        | let ax = if (ac == None): None else: _as_x(ac)
+        | [false, fn(value, env):
+            if (cond(value, env)): tx(value, env)
+            else do
+                let i = _first_true(conds, ne, value, env)
+                | if (i < ne): bodies[i](value, env)
+                  elif (ax == None): {val: None, env: env}
+                  else: ax(value, env)
+              end
+          end]
+      end
+end
+
+# unless (cond): body -- runs body only when cond is false, else yields None.
+def _comp_unless(ast):
+  let cond = _as_v(_comp(ast[:cond]))
+  | let bc = _comp(ast[:body])
+  | let b = bc[1]
+  | if (bc[0]): [true, fn(value, env): if (!cond(value, env)): b(value, env) else: None end]
+    else: [false, fn(value, env): if (!cond(value, env)): b(value, env) else: {val: None, env: env} end]
+end
+
+# ── pipes ─────────────────────────────────────────────────────────────────────
+
+# Source-order stage nodes of a pipe. The parser stores them as an array;
+# an AST built by hand may nest "pipe" nodes through left/right instead.
+def _pipe_stage_asts(ast):
+  if (ast[:stages] != None): ast[:stages]
+  else do
+      var reversed = None
+      | var count = 0
+      | var cursor = ast
+      | while (cursor[:kind] == "pipe"):
+          reversed = [cursor[:right], reversed]
+          | cursor = cursor[:left]
+          | count += 1
+        end
+      | let rest = foreach (i, range(0, count - 1)):
+          let stage = reversed[0]
+          | reversed = reversed[1]
+          | stage
+        end
+      | [cursor] + rest
+    end
+end
+
+# Identity stages (`.` and `self`) leave the value and environment in place,
+# so they compile to nothing.
+def _comp_pipe(ast):
+  var all_pure = true
+  | let cs = foreach (s, _pipe_stage_asts(ast)):
+      if (s[:kind] == "dot" || s[:kind] == "self"): continue
       else do
-        let vr = mq_eval(ast[:val], value, env)
-        | {val: vr[:val], env: vr[:env], ctrl: "break"}
+          let c = _comp(s)
+          | if (!c[0]): all_pure = false
+          | c
+        end
+    end
+  | let n = len(cs)
+  | if (n == 0): [true, fn(value, env): value end]
+    elif (n == 1): cs[0]
+    elif (all_pure) do
+        let codes = foreach (c, cs): c[1] end
+        | if (n == 2) do
+              let s0 = codes[0]
+              | let s1 = codes[1]
+              | [true, fn(value, env): s1(s0(value, env), env) end]
+            end
+          elif (n == 3) do
+              let s0 = codes[0]
+              | let s1 = codes[1]
+              | let s2 = codes[2]
+              | [true, fn(value, env): s2(s1(s0(value, env), env), env) end]
+            end
+          else:
+            [true, fn(value, env):
+              var acc = codes[0](value, env)
+              | var i = 1
+              | while (i < n):
+                  acc = codes[i](acc, env)
+                  | i += 1
+                end
+              | acc
+            end]
       end
-    end
+    else do
+        let flags = foreach (c, cs): c[0] end
+        | let codes = foreach (c, cs): c[1] end
+        | let first_x = _as_x(cs[0])
+        | [false, fn(value, env):
+            let first = first_x(value, env)
+            | var result_val = first[:val]
+            | var result_env = first[:env]
+            | var signal = _ctrl(first)
+            | var i = 1
+            | while (i < n && signal == "none"):
+                if (flags[i]): result_val = codes[i](result_val, result_env)
+                else do
+                    let result = codes[i](result_val, result_env)
+                    | result_val = result[:val]
+                    | result_env = result[:env]
+                    | signal = _ctrl(result)
+                  end
+                | i += 1
+              end
+            | if (signal == "none"): {val: result_val, env: result_env}
+              else: {val: result_val, env: result_env, ctrl: signal}
+          end]
+      end
+end
 
-    elif (k == "continue"):
-      {val: value, env: env, ctrl: "continue"}
+# ── bindings ──────────────────────────────────────────────────────────────────
 
-    elif (k == "interp") do
-      let parts = map(ast[:segs], fn(s):
-        if (s[:kind] == "text"): s[:val]
-        else: to_string(_ev(s[:node], value, env))
-      end)
-      | {val: join(parts, ""), env: env}
-    end
+# `let` and `var` both bind the value of their expression.
+def _comp_let(ast):
+  let name = ast[:name]
+  | let vc = _comp(ast[:val])
+  | let run = vc[1]
+  | if (vc[0]):
+      [false, fn(value, env):
+        let v = run(value, env)
+        | {val: v, env: set(env, name, v)}
+      end]
+    else:
+      [false, fn(value, env):
+        let vr = run(value, env)
+        | {val: vr[:val], env: set(vr[:env], name, vr[:val])}
+      end]
+end
 
-    elif (k == "try") do
-      try:
-        mq_eval(ast[:body], value, env)
-      catch(e):
-        if (is_none(ast[:catch_var])):
-          mq_eval(ast[:catch_body], value, env)
-        else:
-          mq_eval(ast[:catch_body], value, _env_set(env, ast[:catch_var], e))
-    end
+def _comp_destructure(ast):
+  let pattern = ast[:pattern]
+  | let vx = _as_x(_comp(ast[:val]))
+  | [false, fn(value, env):
+      let vr = vx(value, env)
+      | {val: vr[:val], env: _bind_pattern(pattern, vr[:val], vr[:env])}
+    end]
+end
 
-    elif (k == "trysuppress") do
-      try:
-        mq_eval(ast[:target], value, env)
-      catch:
-        {val: None, env: env}
-    end
+def _assign_value(op, cur_val, v):
+  if (op == "="): v
+  elif (op == "+="): cur_val + v
+  elif (op == "-="): cur_val - v
+  elif (op == "*="): cur_val * v
+  elif (op == "/="): cur_val / v
+  elif (op == "%="): cur_val % v
+  elif (op == "//="): floor(cur_val / v)
+  else: v
+end
 
-    elif (k == "match") do
-      let vr = mq_eval(ast[:val], value, env)
-      | _try_match_arms(ast[:arms], vr[:val], value, vr[:env])
-    end
+def _comp_assign(ast):
+  let name = ast[:name]
+  | let op = ast[:op]
+  | let vc = _comp(ast[:val])
+  | let run = vc[1]
+  | if (vc[0]):
+      [false, fn(value, env):
+        let nv = _assign_value(op, env[name], run(value, env))
+        | {val: nv, env: set(env, name, nv)}
+      end]
+    else:
+      [false, fn(value, env):
+        let vr = run(value, env)
+        | let nv = _assign_value(op, env[name], vr[:val])
+        | {val: nv, env: set(vr[:env], name, nv)}
+      end]
+end
 
-    elif (k == "module") do
-      # set() preserves key order and updates an existing key in place, only
-      # ever appending a genuinely new one at the end (verified against the
-      # host runtime). So the module body's new bindings are exactly the
-      # tail of its resulting env past the outer env's original key count --
-      # no need to check `has(env, nk)` per key of the inner env, which costs
-      # O(env size) per lookup on this host's dict and made evaluating a
-      # module quadratic in the size of an already-large environment.
+# ── functions ─────────────────────────────────────────────────────────────────
+
+def _comp_fn(ast):
+  let params = ast[:params]
+  | let body = ast[:body]
+  | let run = _as_v(_comp(body))
+  | let dflt = _compile_defaults(params)
+  | [true, fn(value, env):
+      {kind: "fn", params: params, body: body, env: env, code: run, dflt: dflt}
+    end]
+end
+
+def _comp_def(ast):
+  let name = ast[:name]
+  | let params = ast[:params]
+  | let body = ast[:body]
+  | let run = _as_v(_comp(body))
+  | let dflt = _compile_defaults(params)
+  | [false, fn(value, env):
+      let fn_val = {kind: "fn", name: name, params: params, body: body, env: env, code: run, dflt: dflt}
+      | {val: fn_val, env: set(env, name, fn_val)}
+    end]
+end
+
+# module name: body -- the body's new bindings are exposed as "name::binding".
+# set() preserves key order and updates an existing key in place, only ever
+# appending a genuinely new one at the end (verified against the host
+# runtime). So the body's new bindings are exactly the tail of its resulting
+# env past the outer env's original key count -- no need to check
+# `has(env, nk)` per key, which costs O(env size) per lookup on this host's
+# dict and made evaluating a module quadratic in the size of an
+# already-large environment.
+def _comp_module(ast):
+  let name = ast[:name]
+  | let bx = _as_x(_comp(ast[:body]))
+  | [false, fn(value, env):
       let orig_len = len(keys(env))
-      | let inner = mq_eval(ast[:body], value, env)
+      | let inner = bx(value, env)
       | let after_keys = keys(inner[:env])
       | let new_keys = after_keys[orig_len:len(after_keys)]
       | var new_env = env
       | var i = 0
       | while (i < len(new_keys)):
-          new_env = _env_set(new_env, ast[:name] + "::" + new_keys[i], inner[:env][new_keys[i]])
+          new_env = set(new_env, name + "::" + new_keys[i], inner[:env][new_keys[i]])
           | i += 1
         end
       | {val: None, env: new_env}
-    end
+    end]
+end
 
-    elif (k == "let" || k == "var") do
-      let vr = _eval_keep_env(ast[:val], value, env)
-      | {val: vr[:val], env: _env_set(vr[:env], ast[:name], vr[:val])}
-    end
+# ── control flow ──────────────────────────────────────────────────────────────
 
-    elif (k == "let_destructure" || k == "var_destructure") do
-      let vr = mq_eval(ast[:val], value, env)
-      | let new_env = _bind_pattern(ast[:pattern], vr[:val], vr[:env])
-      | {val: vr[:val], env: new_env}
+def _comp_break(ast):
+  if (ast[:val] == None):
+    [false, fn(value, env): {val: value, env: env, ctrl: "break"} end]
+  else do
+      let vx = _as_x(_comp(ast[:val]))
+      | [false, fn(value, env):
+          let vr = vx(value, env)
+          | {val: vr[:val], env: vr[:env], ctrl: "break"}
+        end]
     end
+end
 
-    elif (k == "assign") do
-      let vr = _eval_keep_env(ast[:val], value, env)
-      | let op = ast[:op]
-      | let cur_val = if (is_none(env[ast[:name]])): None else: env[ast[:name]]
-      | let new_val = if (op == "="):   vr[:val]
-                      elif (op == "+="): cur_val + vr[:val]
-                      elif (op == "-="): cur_val - vr[:val]
-                      elif (op == "*="): cur_val * vr[:val]
-                      elif (op == "/="): cur_val / vr[:val]
-                      elif (op == "%="): cur_val % vr[:val]
-                      elif (op == "//="): floor(cur_val / vr[:val])
-                      else: vr[:val]
-      | let new_env = _env_set(vr[:env], ast[:name], new_val)
-      | {val: new_val, env: new_env}
-    end
+def _comp_try(ast):
+  let bc = _comp(ast[:body])
+  | let cc = _comp(ast[:catch_body])
+  | let catch_var = ast[:catch_var]
+  | if (bc[0] && cc[0] && catch_var == None) do
+        let b = bc[1]
+        | let c = cc[1]
+        | [true, fn(value, env):
+            try:
+              b(value, env)
+            catch:
+              c(value, env)
+          end]
+      end
+    else do
+        let bx = _as_x(bc)
+        | let cx = _as_x(cc)
+        | [false, fn(value, env):
+            try:
+              bx(value, env)
+            catch(e):
+              if (catch_var == None): cx(value, env)
+              else: cx(value, set(env, catch_var, e))
+          end]
+      end
+end
 
-    elif (k == "def") do
-      let fn_val = {kind: "fn", name: ast[:name], params: ast[:params], body: ast[:body], env: env}
-      | let new_env = _env_set(env, ast[:name], fn_val)
-      | {val: fn_val, env: new_env}
-    end
-
-    elif (k == "un") do
-      let er = mq_eval(ast[:expr], value, env)
-      | let v = if (ast[:op] == "!"): !er[:val]
-                elif (ast[:op] == "-"): 0 - er[:val]
-                else: er[:val]
-      | {val: v, env: er[:env]}
-    end
-
-    elif (k == "arr") do
-      let items = map(ast[:items], fn(a): _ev(a, value, env) end)
-      | {val: items, env: env}
-    end
-
-    elif (k == "dict") do
-      # Literal keys are strings. The host constructor inserts entries in
-      # order and replaces duplicate keys without copying the growing dict.
-      let entries = map(ast[:pairs], fn(pair):
-        [_ev(pair[:key], value, env), _ev(pair[:val], value, env)]
-      end)
-      | {val: dict(entries), env: env}
-    end
-
-    elif (k == "idx") do
-      let br = mq_eval(ast[:base], value, env)
-      | let ir = mq_eval(ast[:index], value, br[:env])
-      | {val: br[:val][ir[:val]], env: ir[:env]}
-    end
-
-    elif (k == "dkey") do
-      let br = mq_eval(ast[:base], value, env)
-      | {val: br[:val][ast[:key]], env: br[:env]}
-    end
-
-    elif (k == "slice") do
-      let br = mq_eval(ast[:base], value, env)
-      | let fr = mq_eval(ast[:from], value, br[:env])
-      | let tr = if (is_none(ast[:to])): {val: len(br[:val]), env: fr[:env]}
-                 else: mq_eval(ast[:to], value, fr[:env])
-      | {val: br[:val][fr[:val]:tr[:val]], env: tr[:env]}
-    end
-
+# `expr?` -- an error in expr yields None instead of propagating.
+def _comp_trysuppress(ast):
+  let tc = _comp(ast[:target])
+  | let t = tc[1]
+  | if (tc[0]):
+      [true, fn(value, env):
+        try:
+          t(value, env)
+        catch:
+          None
+      end]
     else:
-      error("Unknown AST kind: " + to_string(k))
+      [false, fn(value, env):
+        try:
+          t(value, env)
+        catch:
+          {val: None, env: env}
+      end]
 end
 
-# ── if / elif / else ──────────────────────────────────────────────────────────
-
-def _eval_if_node(ast, value, env):
-  let cond_val = _ev(ast[:cond], value, env)
-  | if (cond_val):
-      mq_eval(ast[:then], value, env)
+# `until` stops when its condition becomes true; `while` stops when it
+# becomes false. Continue keeps the previous value but retains new bindings.
+def _comp_cond_loop(ast, stop_when_true):
+  let cond = _as_v(_comp(ast[:cond]))
+  | let bc = _comp(ast[:body])
+  | let body = bc[1]
+  | if (bc[0]):
+      # A pure body can neither bind nor signal, so only the value advances.
+      [false, fn(value, env):
+        var cur_val = value
+        | var running = cond(cur_val, env) != stop_when_true
+        | while (running):
+            cur_val = body(cur_val, env)
+            | running = cond(cur_val, env) != stop_when_true
+          end
+        | {val: cur_val, env: env}
+      end]
     else:
-      _eval_elifs(ast[:elifs], ast[:else_br], value, env)
+      [false, fn(value, env):
+        var cur_env = env
+        | var cur_val = value
+        | var running = cond(cur_val, cur_env) != stop_when_true
+        | while (running):
+            let br = body(cur_val, cur_env)
+            | let c = _ctrl(br)
+            | cur_env = br[:env]
+            | if (c == "break") do
+                  cur_val = br[:val]
+                  | running = false
+                end
+              else do
+                  if (c != "continue"): cur_val = br[:val]
+                  | running = cond(cur_val, cur_env) != stop_when_true
+                end
+          end
+        | {val: cur_val, env: cur_env}
+      end]
 end
 
-## unless (cond): body -- runs body only when cond is false, else yields None.
-def _eval_unless(ast, value, env):
-  let cond_val = _ev(ast[:cond], value, env)
-  | if (!cond_val):
-      mq_eval(ast[:body], value, env)
-    else:
-      {val: None, env: env}
-end
+# ── foreach ───────────────────────────────────────────────────────────────────
+#
+# Uses the host's own `foreach` (rather than a manual `var results = [] |
+# while(...): results += [...] end` loop) so the accumulator gets the VM's
+# dedicated collect-in-place fast path instead of a fresh array copy on every
+# iteration -- the difference is O(n) vs. O(n²) for large inputs. `break`
+# inside the host foreach genuinely stops iterating (not just a cheap
+# per-item skip), so it also short-circuits the interpreted loop for free.
 
-def _eval_elifs(elifs, else_node, value, env):
-  var i = 0
-  | var result = None
-  | let n = len(elifs)
-  | while (i < n && is_none(result)):
-      let e = elifs[i]
-      | if (_ev(e[:cond], value, env)):
-          result = mq_eval(e[:body], value, env)
-      | i += 1
-    end
-  | if (!is_none(result)): result
-    elif (!is_none(else_node)): mq_eval(else_node, value, env)
-    else: {val: None, env: env}
-end
-
-# ── while / until loops ───────────────────────────────────────────────────────
-
-## `until` stops when its condition becomes true; `while` stops when it
-## becomes false. Continue keeps the previous value but retains new bindings.
-def _eval_cond_loop(ast, value, env, stop_when_true):
-  let condition = ast[:cond]
-  | let body = ast[:body]
-  | var cur_env = env
-  | var cur_val = value
-  | var running = _ev(condition, cur_val, cur_env) != stop_when_true
-  | while (running):
-      let br = mq_eval(body, cur_val, cur_env)
-      | let c = _ctrl(br)
-      | cur_env = br[:env]
-      | if (c == "break") do
-          cur_val = br[:val]
-          | running = false
-        end
-        else do
-          if (c != "continue"): cur_val = br[:val]
-          | running = _ev(condition, cur_val, cur_env) != stop_when_true
-        end
-    end
-  | {val: cur_val, env: cur_env}
-end
-
-# ── foreach loop ──────────────────────────────────────────────────────────────
-
-## Uses the host's own `foreach` (rather than a manual `var results = [] |
-## while(...): results += [...] end` loop) so the accumulator gets the VM's
-## dedicated collect-in-place fast path instead of a fresh array copy on every
-## iteration -- the difference is O(n) vs. O(n²) for large inputs. `break`
-## inside the host foreach genuinely stops iterating (not just a cheap
-## per-item skip), so it also short-circuits the interpreted loop for free.
-## A body of the form `item OP <number>` reads only its parameter. Its
-## evaluation needs no per-item environment binding for eager operators.
+# A body of the form `item OP <number>` reads only its parameter. Its
+# evaluation needs no per-item environment binding for eager operators.
 def _is_item_literal_bin(body, name):
   body[:kind] == "bin" && body[:left][:kind] == "ident" &&
-    body[:left][:name] == name && body[:right][:kind] == "num" &&
+  body[:left][:name] == name && body[:right][:kind] == "num" &&
     _ITEM_LITERAL_BIN_OPS[body[:op]]
 end
 
-def _eval_foreach(ast, value, env):
-  let iter_val = _ev(ast[:iter], value, env)
-  | let iter_var = ast[:iter_var]
-  | let body = ast[:body]
-  | let body_kind = body[:kind]
-  # An identity body can reuse the input array. A bound None is excluded from
-  # the identifier case because `_ev` then tries builtin lookup instead.
-  | if (is_array(iter_val) &&
-      (body_kind == "dot" || body_kind == "self" ||
-       (body_kind == "ident" && body[:name] == iter_var && !contains(iter_val, None)))):
-      {val: iter_val, env: if (is_empty(iter_val)): env else: set(env, iter_var, last(iter_val))}
-    elif (is_array(iter_val) && _is_item_literal_bin(body, iter_var)):
-      _eval_foreach_literal_bin(iter_var, iter_val, body, env)
-    elif (_KEEPS_ENV[body_kind]): _eval_foreach_values(iter_var, iter_val, body, env)
-    else: _eval_foreach_env(iter_var, iter_val, body, env)
+# Apply `item OP literal` to every item and bind the final item once after
+# collecting results, instead of copying the environment for every item.
+def _foreach_literal_bin(iter_var, iter_val, op, right, env):
+  let results = foreach (item, iter_val):
+    _eval_bin(op, item, right)
+  end
+  | {val: results, env: if (len(iter_val) == 0): env else: set(env, iter_var, last(iter_val))}
 end
 
-## A binary expression using only the current item and a numeric literal
-## cannot change the environment. Bind the final item once after collecting
-## results instead of copying the environment for every item.
-def _eval_foreach_literal_bin(iter_var, iter_val, body, env):
-  let op = body[:op]
-  | let right = body[:right][:val]
-  | let results = foreach (item, iter_val):
-      _eval_bin(op, item, right)
-    end
-  | {val: results, env: if (is_empty(iter_val)): env else: set(env, iter_var, last(iter_val))}
-end
-
-## A body that keeps its env can't bind anything or signal break/continue, so
-## each item's result is collected directly. The loop variable stays bound to
-## the last item afterwards, as in _eval_foreach_env.
-def _eval_foreach_values(iter_var, iter_val, body, env):
+# A body that cannot bind or signal has its result collected directly. The
+# loop variable stays bound to the last item afterwards, as in _foreach_env.
+def _foreach_values(iter_var, iter_val, run, env):
   var cur_env = env
   | let results = foreach (item, iter_val):
       cur_env = set(env, iter_var, item)
-      | _ev(body, item, cur_env)
+      | run(item, cur_env)
     end
   | {val: results, env: cur_env}
 end
 
-def _eval_foreach_env(iter_var, iter_val, body, env):
+def _foreach_env(iter_var, iter_val, run, env):
   var cur_env = env
   | var broke = false
   | var brk_val = None
   | let results = foreach (item, iter_val):
       let loop_env = set(cur_env, iter_var, item)
-      | let br = mq_eval(body, item, loop_env)
+      | let br = run(item, loop_env)
       | let signal = br[:ctrl]
       | cur_env = br[:env]
-      | if (is_none(signal) || signal == "none"):
+      | if (signal == None || signal == "none"):
           br[:val]
         elif (signal == "break") do
-          brk_val = br[:val]
-          | broke = true
-          | break
-        end
+            brk_val = br[:val]
+            | broke = true
+            | break
+          end
         elif (signal == "continue"):
           continue
         else:
@@ -1220,7 +1549,148 @@ def _eval_foreach_env(iter_var, iter_val, body, env):
     else: {val: results, env: cur_env}
 end
 
-## Top-level eval: returns just the value (not the {val,env} pair).
+def _comp_foreach(ast):
+  let iter_var = ast[:iter_var]
+  | let body = ast[:body]
+  | let body_kind = body[:kind]
+  | let ic = _as_v(_comp(ast[:iter]))
+  | let bc = _comp(body)
+  | let run = bc[1]
+  | let bpure = bc[0]
+  # An identity body can reuse the input array. A bound None is excluded from
+  # the identifier case because evaluating the identifier then tries builtin
+  # lookup instead.
+  | let identity = body_kind == "dot" || body_kind == "self"
+  | let item_body = body_kind == "ident" && body[:name] == iter_var
+  | let lit_bin = _is_item_literal_bin(body, iter_var)
+  | let lit_op = if (lit_bin): body[:op] else: None
+  | let lit_right = if (lit_bin): body[:right][:val] else: None
+  | [false, fn(value, env):
+      let iter_val = ic(value, env)
+      | if (is_array(iter_val) && (identity || (item_body && !contains(iter_val, None)))):
+          {val: iter_val, env: if (len(iter_val) == 0): env else: set(env, iter_var, last(iter_val))}
+        elif (is_array(iter_val) && lit_bin):
+          _foreach_literal_bin(iter_var, iter_val, lit_op, lit_right, env)
+        elif (bpure): _foreach_values(iter_var, iter_val, run, env)
+        else: _foreach_env(iter_var, iter_val, run, env)
+    end]
+end
+
+# ── match ─────────────────────────────────────────────────────────────────────
+
+# A literal arm over a number, string, boolean, or None compares directly
+# against its AST value, so a long run of non-matching literals does not
+# allocate a result dictionary per arm.
+def _comp_match(ast):
+  let vx = _as_x(_comp(ast[:val]))
+  | let arms = foreach (arm, ast[:arms]):
+      let pattern = arm[:pattern]
+      | let literal = if (pattern[:kind] == "litpat"): pattern[:val] else: None
+      | let literal_kind = if (literal == None): None else: literal[:kind]
+      | let direct = literal_kind == "num" || literal_kind == "str" || literal_kind == "bool" || literal_kind == "none"
+      | {
+          pattern: pattern,
+          direct: direct,
+          literal: if (literal_kind == "none" || !direct): None else: literal[:val],
+          guard: if (arm[:guard] == None): None else: _as_v(_comp(arm[:guard])),
+          body: _as_x(_comp(arm[:body])),
+        }
+    end
+  | let n = len(arms)
+  | [false, fn(value, env):
+      let vr = vx(value, env)
+      | let matchval = vr[:val]
+      | let match_env = vr[:env]
+      | var i = 0
+      | var result = None
+      | while (i < n && result == None):
+          let arm = arms[i]
+          | let guard = arm[:guard]
+          | if (arm[:direct]) do
+                if (matchval == arm[:literal] && (guard == None || guard(value, match_env))):
+                  result = arm[:body](value, match_env)
+              end
+            else do
+                let mr = _match_pattern(arm[:pattern], matchval, match_env)
+                | if (mr[:matched] && (guard == None || guard(value, mr[:env]))):
+                    result = arm[:body](value, mr[:env])
+              end
+          | i += 1
+        end
+      | if (result == None): error("No match arm matched") else: result
+    end]
+end
+
+# ── dispatch ──────────────────────────────────────────────────────────────────
+
+def _comp(ast):
+  let k = ast[:kind]
+  | if (k == "ident"): _comp_ident(ast)
+    elif (k == "num" || k == "str" || k == "bool"): _comp_const(ast[:val])
+    elif (k == "call"): _comp_call(ast)
+    elif (k == "bin"): _comp_bin(ast)
+    elif (k == "bin_chain"): _comp_bin_chain(ast[:first], ast[:stages])
+    elif (k == "pipe"): _comp_pipe(ast)
+    elif (k == "if"): _comp_if(ast)
+    elif (k == "self" || k == "dot"): [true, fn(value, env): value end]
+    elif (k == "none"): _comp_const(None)
+    elif (k == "atom"): _comp_const(ast[:name])
+    elif (k == "nodes"): [true, fn(value, env): env["__nodes__"] end]
+    elif (k == "sel") do
+        let name = ast[:name]
+        | let pred = _sel_pred(name)
+        | if (pred == None): [true, fn(value, env): error("Unknown selector: ." + name) end]
+          else: [true, fn(value, env): _apply_sel(pred, value) end]
+      end
+    elif (k == "un"): _comp_un(ast)
+    elif (k == "arr"): _comp_arr(ast)
+    elif (k == "dict"): _comp_dict(ast)
+    elif (k == "idx"): _comp_idx(ast)
+    elif (k == "dkey"): _comp_dkey(ast)
+    elif (k == "slice"): _comp_slice(ast)
+    elif (k == "interp"): _comp_interp(ast)
+    elif (k == "let" || k == "var"): _comp_let(ast)
+    elif (k == "assign"): _comp_assign(ast)
+    elif (k == "let_destructure" || k == "var_destructure"): _comp_destructure(ast)
+    elif (k == "fn"): _comp_fn(ast)
+    elif (k == "def"): _comp_def(ast)
+    elif (k == "do"): _comp(ast[:body])
+    elif (k == "unless"): _comp_unless(ast)
+    elif (k == "while"): _comp_cond_loop(ast, false)
+    elif (k == "until"): _comp_cond_loop(ast, true)
+    elif (k == "foreach"): _comp_foreach(ast)
+    elif (k == "break"): _comp_break(ast)
+    elif (k == "continue"): [false, fn(value, env): {val: value, env: env, ctrl: "continue"} end]
+    elif (k == "try"): _comp_try(ast)
+    elif (k == "trysuppress"): _comp_trysuppress(ast)
+    elif (k == "match"): _comp_match(ast)
+    elif (k == "module"): _comp_module(ast)
+    else: [true, fn(value, env): error("Unknown AST kind: " + to_string(k)) end]
+end
+
+# ── public entry points ───────────────────────────────────────────────────────
+
+# Compile an AST once; the result can be passed to mq_eval any number of
+# times without compiling again.
+def mq_compile(ast):
+  {kind: "compiled", ast: ast, run: _as_x(_comp(ast))}
+end
+
+# Evaluate an AST node (or a mq_compile result), returning
+# {val: <result>, env: <env>}.
+def mq_eval(ast, value, env):
+  if (ast[:kind] == "compiled"): ast[:run](value, env)
+  else do
+      let run = _as_x(_comp(ast))
+      | run(value, env)
+    end
+end
+
+# Top-level eval: returns just the value (not the {val,env} pair).
 def mq_eval_v(ast, value, env):
-  _ev(ast, value, env)
+  if (ast[:kind] == "compiled"): ast[:run](value, env)[:val]
+  else do
+      let run = _as_v(_comp(ast))
+      | run(value, env)
+    end
 end

@@ -45,16 +45,16 @@
 # {node, pos} with the position just past what they consumed.
 
 import "lexer"
-## Token types that form a complete primary expression on their own.
+# Token types that form a complete primary expression on their own.
 | let _SIMPLE_TOKENS = {
   "num": true, "str": true, "bool": true, "none": true, "atom": true,
   "ident": true, "sel": true, "dot": true, "istr": true,
 }
 | let _LIST_CLOSERS = {",": true, ")": true, "]": true, "}": true}
-## Binding power of each binary operator, lowest first. `!` sits between
-## `&&` (2) and the comparisons (3); see _parse_binary. `??` and `..` bind
-## tighter than the arithmetic operators in real mq (e.g. `5 ?? 2 * 3` is
-## `(5 ?? 2) * 3`).
+# Binding power of each binary operator, lowest first. `!` sits between
+# `&&` (2) and the comparisons (3); see _parse_binary. `??` and `..` bind
+# tighter than the arithmetic operators in real mq (e.g. `5 ?? 2 * 3` is
+# `(5 ?? 2) * 3`).
 | let _BIN_PREC = {
   "||": 1,
   "&&": 2,
@@ -70,9 +70,9 @@ import "lexer"
 def _at_v(toks, pos, v):  toks[pos][:v] == v       end
 def _at_eof(toks, pos):   toks[pos][:t] == "eof"   end
 
-## Like _at_v, but also requires the token to be an "op" token -- otherwise a
-## string literal whose contents happen to equal an operator symbol (e.g.
-## `"-"`, `"+"`) would be misread as that operator.
+# Like _at_v, but also requires the token to be an "op" token -- otherwise a
+# string literal whose contents happen to equal an operator symbol (e.g.
+# `"-"`, `"+"`) would be misread as that operator.
 def _at_op(toks, pos, v):
   let tok = toks[pos]
   | tok[:t] == "op" && tok[:v] == v
@@ -83,12 +83,12 @@ def _peekn(toks, pos, n):
   | if (p < len(toks)): toks[p] else: {t: "eof", v: ""}
 end
 
-## Skip an optional token, returning the position after it.
+# Skip an optional token, returning the position after it.
 def _skip_v(toks, pos, v):
   if (toks[pos][:v] == v): pos + 1 else: pos
 end
 
-## Require a token value, returning the position after it.
+# Require a token value, returning the position after it.
 def _expect_v(toks, pos, v):
   let tok = toks[pos]
   | if (tok[:v] == v):
@@ -97,7 +97,7 @@ def _expect_v(toks, pos, v):
       error("Expected '" + to_string(v) + "' but got '" + to_string(tok[:v]) + "'")
 end
 
-## Require punctuation, not a string literal with the same text.
+# Require punctuation, not a string literal with the same text.
 def _expect_op(toks, pos, v):
   let tok = toks[pos]
   | if (tok[:t] == "op" && tok[:v] == v):
@@ -106,7 +106,7 @@ def _expect_op(toks, pos, v):
       error("Expected operator '" + v + "' but got '" + to_string(tok[:v]) + "'")
 end
 
-## Require a token type, returning the token.
+# Require a token type, returning the token.
 def _expect_t(toks, pos, t):
   let tok = toks[pos]
   | if (tok[:t] == t):
@@ -119,8 +119,8 @@ def _is_assign_op(v):
   v == "=" || v == "+=" || v == "-=" || v == "*=" || v == "/=" || v == "|=" || v == "%=" || v == "//="
 end
 
-## Append a reversed linked tail after a small array prefix. Large parser
-## lists avoid copying their growing array on every item.
+# Append a reversed linked tail after a small array prefix. Large parser
+# lists avoid copying their growing array on every item.
 def _finish_list(prefix, tail, count):
   prefix + reverse(foreach (i, range(0, count - 1)):
     let item = tail[0]
@@ -131,7 +131,7 @@ end
 
 # ── public entry point ────────────────────────────────────────────────────────
 
-## Parse a token list produced by lex() and return the root AST node.
+# Parse a token list produced by lex() and return the root AST node.
 def mq_parse(tokens):
   _parse_pipe_list(tokens, 0)[:node]
 end
@@ -272,8 +272,8 @@ def _parse_var_decl(toks, pos):
   _parse_binding(toks, pos, "var", "var_destructure")
 end
 
-## `let`/`var` share their grammar: a name or destructuring pattern, `=`, and
-## a value expression.
+# `let`/`var` share their grammar: a name or destructuring pattern, `=`, and
+# a value expression.
 def _parse_binding(toks, pos, kind, destructure_kind):
   let p2 = pos + 1
   | if (_at_v(toks, p2, "[") || _at_v(toks, p2, "{")) do
@@ -332,8 +332,8 @@ end
 
 # ── if / elif / else ──────────────────────────────────────────────────────────
 
-## `(cond)` followed by an optional `:`; returns the condition and the
-## position of the body.
+# `(cond)` followed by an optional `:`; returns the condition and the
+# position of the body.
 def _parse_cond(toks, pos):
   let cr = _parse_pipe_list(toks, _expect_v(toks, pos, "("))
   | {node: cr[:node], pos: _skip_v(toks, _expect_v(toks, cr[:pos], ")"), ":")}
@@ -368,8 +368,8 @@ def _parse_opt_else(toks, cur):
     {node: None, pos: cur}
 end
 
-## unless (cond): expr -- single-branch conditional that runs when `cond` is
-## false (inverted single-branch `if`, no `end`, no `elif`/`else`).
+# unless (cond): expr -- single-branch conditional that runs when `cond` is
+# false (inverted single-branch `if`, no `end`, no `elif`/`else`).
 def _parse_unless(toks, pos):
   let cr = _parse_cond(toks, pos + 1)
   | let br = _parse_if_body(toks, cr[:pos])
@@ -400,7 +400,7 @@ end
 
 # ── until ─────────────────────────────────────────────────────────────────────
 
-## until (cond): body end -- loops while `cond` is false (inverted `while`).
+# until (cond): body end -- loops while `cond` is false (inverted `while`).
 def _parse_until(toks, pos):
   _parse_cond_loop(toks, pos, "until")
 end
@@ -442,9 +442,9 @@ end
 
 # ── try / catch ───────────────────────────────────────────────────────────────
 
-## Optional error binder on a `catch` clause: `catch(e):` binds `e` to a
-## `{message: ...}` dict describing the failure, scoped to the catch body.
-## Plain `catch:` (no binder) still works and leaves `name` as None.
+# Optional error binder on a `catch` clause: `catch(e):` binds `e` to a
+# `{message: ...}` dict describing the failure, scoped to the catch body.
+# Plain `catch:` (no binder) still works and leaves `name` as None.
 def _parse_catch_binder(toks, pos):
   if (_at_v(toks, pos, "(")) do
       let name = _expect_t(toks, pos + 1, "ident")[:v]
@@ -463,10 +463,10 @@ end
 
 # ── match / pattern matching ────────────────────────────────────────────────────
 
-## match (val):
-##   | pattern [if (guard)]: body
-##   | ...
-## end
+# match (val):
+#   | pattern [if (guard)]: body
+#   | ...
+# end
 def _parse_match(toks, pos):
   let vr = _parse_expr(toks, _expect_v(toks, pos + 1, "("))
   | let p5 = _skip_v(toks, _expect_v(toks, vr[:pos], ")"), ":")
@@ -537,11 +537,11 @@ end
 
 # ── module (inline) ──────────────────────────────────────────────────────────
 
-## module name: def ...; def ...; end -- functions defined in the body are
-## registered under "name::fn" rather than leaking their bare names, mirroring
-## real mq's inline-module namespacing. Body statements must be `|`-chained
-## like everywhere else in mqmq (real mq also allows bare newline-separated
-## defs here; that grammar isn't replicated -- see README Known Limitations).
+# module name: def ...; def ...; end -- functions defined in the body are
+# registered under "name::fn" rather than leaking their bare names, mirroring
+# real mq's inline-module namespacing. Body statements must be `|`-chained
+# like everywhere else in mqmq (real mq also allows bare newline-separated
+# defs here; that grammar isn't replicated -- see README Known Limitations).
 def _parse_module(toks, pos):
   let name = _expect_t(toks, pos + 1, "ident")[:v]
   | let br = _parse_pipe_list(toks, _skip_v(toks, pos + 2, ":"))
@@ -550,8 +550,8 @@ end
 
 # ── string interpolation ──────────────────────────────────────────────────────
 
-## Resolve each raw "expr" segment (source text) produced by the lexer into a
-## parsed sub-AST, by recursively lexing + parsing it.
+# Resolve each raw "expr" segment (source text) produced by the lexer into a
+# parsed sub-AST, by recursively lexing + parsing it.
 def _parse_interp_segs(segs):
   map(segs, fn(s):
     if (s[:kind] == "text"): {kind: "text", val: s[:val]}
@@ -573,10 +573,10 @@ def _parse_list_expr(toks, pos):
       _parse_expr(toks, pos)
 end
 
-## Precedence climbing over _BIN_PREC. Every level is left-associative, so
-## the right operand is parsed one level tighter than its operator. One call
-## per operand replaces a call (and a {node, pos} result) per precedence level,
-## and an operand with no following operator is returned as-is.
+# Precedence climbing over _BIN_PREC. Every level is left-associative, so
+# the right operand is parsed one level tighter than its operator. One call
+# per operand replaces a call (and a {node, pos} result) per precedence level,
+# and an operand with no following operator is returned as-is.
 def _parse_binary(toks, pos, min_prec):
   let first = if (min_prec <= 3 && _at_op(toks, pos, "!")) do
       let r = _parse_binary(toks, pos + 1, 3)
@@ -634,9 +634,9 @@ def _parse_binary(toks, pos, min_prec):
     end
 end
 
-## Keep small expressions as ordinary bin nodes. A longer left-associated
-## chain is flattened once so the evaluator need not rebuild its traversal
-## stack each time a compiled AST is used.
+# Keep small expressions as ordinary bin nodes. A longer left-associated
+# chain is flattened once so the evaluator need not rebuild its traversal
+# stack each time a compiled AST is used.
 def _flatten_bin_chain(node, count):
   var cursor = node
   | var reversed = None
@@ -654,11 +654,11 @@ def _flatten_bin_chain(node, count):
   | {kind: "bin_chain", first: cursor, stages: stages}
 end
 
-## Binding power of a binary operator token, or 0 for any other token.
+# Binding power of a binary operator token, or 0 for any other token.
 def _op_prec(tok):
   if (tok[:t] == "op") do
     let p = _BIN_PREC[tok[:v]]
-    | if (is_none(p)): 0 else: p
+    | if (p == None): 0 else: p
   end
   else: 0
 end

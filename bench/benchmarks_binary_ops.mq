@@ -1,36 +1,37 @@
 # Run with: mq-bench bench/benchmarks_binary_ops.mq --iterations 10 --warmup 2
-# Short value-only operators exercised inside recursive expressions.
+# Short value-only operators exercised inside recursive expressions. Each
+# program is compiled once, at module load.
 
 import "eval" as eval
 | let left = {kind: "ident", name: "n"}
 | let right = {kind: "num", val: 1}
-| let add_ast = {kind: "bin", op: "+", left: left, right: right}
-| let sub_ast = {kind: "bin", op: "-", left: left, right: right}
-| let less_ast = {kind: "bin", op: "<", left: left, right: right}
-| let equal_ast = {kind: "bin", op: "==", left: left, right: right}
+| let add_ast = eval::mq_compile({kind: "bin", op: "+", left: left, right: right})
+| let sub_ast = eval::mq_compile({kind: "bin", op: "-", left: left, right: right})
+| let less_ast = eval::mq_compile({kind: "bin", op: "<", left: left, right: right})
+| let equal_ast = eval::mq_compile({kind: "bin", op: "==", left: left, right: right})
 | let env = {n: 10}
 |
 
 def bench_add_repeated():
   foreach (i, range(0, 9999)):
-    eval::_ev_bin(add_ast, None, env)
+    eval::mq_eval_v(add_ast, None, env)
   end
 end
 
 def bench_sub_repeated():
   foreach (i, range(0, 9999)):
-    eval::_ev_bin(sub_ast, None, env)
+    eval::mq_eval_v(sub_ast, None, env)
   end
 end
 
 def bench_less_repeated():
   foreach (i, range(0, 9999)):
-    eval::_ev_bin(less_ast, None, env)
+    eval::mq_eval_v(less_ast, None, env)
   end
 end
 
 def bench_equal_repeated():
   foreach (i, range(0, 9999)):
-    eval::_ev_bin(equal_ast, None, env)
+    eval::mq_eval_v(equal_ast, None, env)
   end
 end

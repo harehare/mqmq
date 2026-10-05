@@ -5,23 +5,23 @@ import "eval" as eval
 | let captured = dict(map(range(0, 1023), fn(i): ["k" + to_string(i), i] end))
 | let params = map(range(0, 127), fn(i): {name: "p" + to_string(i), default: None} end)
 | let args = map(range(0, 127), fn(i): {kind: "num", val: i} end)
-| let fn_val = {kind: "fn", name: "f", params: params,
-    body: {kind: "ident", name: "p127"}, env: captured}
-| let call_ast = {kind: "call", name: "f", args: args}
+| let fn_val = eval::mq_eval({kind: "def", name: "f", params: params,
+    body: {kind: "ident", name: "p127"}}, None, captured)[:val]
+| let call_ast = eval::mq_compile({kind: "call", name: "f", args: args})
 | let env = set(captured, "f", fn_val)
-| let small_fn = {kind: "fn", name: "small", params: params[0:8],
-    body: {kind: "ident", name: "p7"}, env: {}}
-| let small_call = {kind: "call", name: "small", args: args[0:8]}
+| let small_fn = eval::mq_eval({kind: "def", name: "small", params: params[0:8],
+    body: {kind: "ident", name: "p7"}}, None, {})[:val]
+| let small_call = eval::mq_compile({kind: "call", name: "small", args: args[0:8]})
 | let small_env = {small: small_fn}
 | let default_params = params[0:7] + [{name: "p7", default: {kind: "num", val: 42}}]
-| let default_fn = {kind: "fn", name: "with_default", params: default_params,
-    body: {kind: "ident", name: "p7"}, env: {}}
-| let default_call = {kind: "call", name: "with_default", args: args[0:7]}
+| let default_fn = eval::mq_eval({kind: "def", name: "with_default", params: default_params,
+    body: {kind: "ident", name: "p7"}}, None, {})[:val]
+| let default_call = eval::mq_compile({kind: "call", name: "with_default", args: args[0:7]})
 | let default_env = {with_default: default_fn}
 | let captured_default_params = params[0:127] + [{name: "p127", default: {kind: "ident", name: "p126"}}]
-| let captured_default_fn = {kind: "fn", name: "with_default", params: captured_default_params,
-    body: {kind: "ident", name: "p127"}, env: captured}
-| let captured_default_call = {kind: "call", name: "with_default", args: args[0:127]}
+| let captured_default_fn = eval::mq_eval({kind: "def", name: "with_default", params: captured_default_params,
+    body: {kind: "ident", name: "p127"}}, None, captured)[:val]
+| let captured_default_call = eval::mq_compile({kind: "call", name: "with_default", args: args[0:127]})
 | let captured_default_env = set(captured, "with_default", captured_default_fn)
 |
 

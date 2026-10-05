@@ -24,13 +24,13 @@ import "lexer" as lexer
 | let _interp_128_expr_source = "s\"" + join(map(range(0, 127), fn(i): _interp_expr_chunk end), "") + "z\""
 | let _interp_512_expr_source = "s\"" + join(map(range(0, 511), fn(i): _interp_expr_chunk end), "") + "z\""
 | let _tokens = lexer::lex(_query)
-| let _ast = parser::mq_parse(_tokens)
-| let _long_ast = parser::mq_parse(lexer::lex(_long_query))
-| let _short_chain_ast = parser::mq_parse(lexer::lex("1 + 2 + 3"))
-| let _mid_chain_ast = parser::mq_parse(lexer::lex("1 + 2 + 3 + 4 + 5 + 6 + 7 + 8"))
-| let _lazy_ast = parser::mq_parse(lexer::lex("false && error(\"unreachable\")"))
+| let _ast = eval::mq_compile(parser::mq_parse(_tokens))
+| let _long_ast = eval::mq_compile(parser::mq_parse(lexer::lex(_long_query)))
+| let _short_chain_ast = eval::mq_compile(parser::mq_parse(lexer::lex("1 + 2 + 3")))
+| let _mid_chain_ast = eval::mq_compile(parser::mq_parse(lexer::lex("1 + 2 + 3 + 4 + 5 + 6 + 7 + 8")))
+| let _lazy_ast = eval::mq_compile(parser::mq_parse(lexer::lex("false && error(\"unreachable\")")))
 | let _fib_query = "def fib(n): if (n < 2): n else: fib(n - 1) + fib(n - 2) end | fib(20)"
-| let _fib_ast = parser::mq_parse(lexer::lex(_fib_query))
+| let _fib_ast = eval::mq_compile(parser::mq_parse(lexer::lex(_fib_query)))
 |
 
 def native_fib(n):

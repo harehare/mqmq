@@ -7,11 +7,11 @@ import "eval" as eval
     {key: {kind: "str", val: "k" + to_string(i)},
      val: {kind: "num", val: i}}
   end)
-| let ast = {kind: "dict", pairs: pairs}
+| let ast = eval::mq_compile({kind: "dict", pairs: pairs})
 | let nested_dict = {kind: "dict", pairs: pairs[0:4]}
-| let nested_array = {kind: "arr", items: map(range(0, 255), fn(i): nested_dict end)}
+| let nested_array = eval::mq_compile({kind: "arr", items: map(range(0, 255), fn(i): nested_dict end)})
 | let inner_array = {kind: "arr", items: [{kind: "num", val: 1}, {kind: "num", val: 2}]}
-| let array_of_arrays = {kind: "arr", items: map(range(0, 255), fn(i): inner_array end)}
+| let array_of_arrays = eval::mq_compile({kind: "arr", items: map(range(0, 255), fn(i): inner_array end)})
 |
 
 def bench_dict_1024():

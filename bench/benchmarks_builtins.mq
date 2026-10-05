@@ -4,8 +4,8 @@
 import "eval" as eval
 | let values = range(0, 15)
 | let env = {values: values}
-| let len_ast = {kind: "call", name: "len", args: [{kind: "ident", name: "values"}]}
-| let pow_ast = {kind: "call", name: "pow", args: [{kind: "num", val: 2}, {kind: "num", val: 3}]}
+| let len_ast = eval::mq_compile({kind: "call", name: "len", args: [{kind: "ident", name: "values"}]})
+| let pow_ast = eval::mq_compile({kind: "call", name: "pow", args: [{kind: "num", val: 2}, {kind: "num", val: 3}]})
 |
 
 def bench_builtin_len_repeated():

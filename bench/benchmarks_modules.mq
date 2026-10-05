@@ -6,8 +6,8 @@ import "eval" as eval
 | let _setup = foreach (i, range(1, 1024)):
     env = set(env, "k" + to_string(i), i)
   end
-| let module_ast = {kind: "module", name: "m",
-    body: {kind: "def", name: "f", params: [], body: {kind: "num", val: 1}}}
+| let module_ast = eval::mq_compile({kind: "module", name: "m",
+    body: {kind: "def", name: "f", params: [], body: {kind: "num", val: 1}}})
 | None
 |
 

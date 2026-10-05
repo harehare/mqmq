@@ -9,8 +9,8 @@ import "eval" as eval
 | let less_body = {kind: "bin", op: "<", left: item_ast, right: {kind: "num", val: 4096}}
 | let double_fn = {kind: "fn", params: param, body: double_body}
 | let less_fn = {kind: "fn", params: param, body: less_body}
-| let map_ast = {kind: "call", name: "map", args: [{kind: "dot"}, double_fn]}
-| let filter_ast = {kind: "call", name: "filter", args: [{kind: "dot"}, less_fn]}
+| let map_ast = eval::mq_compile({kind: "call", name: "map", args: [{kind: "dot"}, double_fn]})
+| let filter_ast = eval::mq_compile({kind: "call", name: "filter", args: [{kind: "dot"}, less_fn]})
 |
 
 def bench_map_double_8192():
