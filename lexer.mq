@@ -14,9 +14,9 @@
 #   dot   - bare dot "."
 #   op    - operator/punctuation
 
-## Keyword lookup table, built once at module load (not per call) and checked
-## with an O(1) dict lookup instead of a linear `contains` scan over an array
-## rebuilt on every call.
+# Keyword lookup table, built once at module load (not per call) and checked
+# with an O(1) dict lookup instead of a linear `contains` scan over an array
+# rebuilt on every call.
 let _KWS = {
   "def": true, "fn": true, "let": true, "var": true, "if": true, "elif": true,
   "else": true, "end": true, "do": true, "while": true, "until": true,
@@ -30,20 +30,20 @@ let _KWS = {
   ">>": true, "+=": true, "-=": true, "->": true, "*=": true,
   "/=": true, "%=": true, "??": true,
 }
-## One alternative per token shape, tried in order: comment, selector, atom,
-## word, number, the two string forms, then every multi-character operator.
-## The final alternative takes any other single character except whitespace,
-## so the matches cover everything but the whitespace between tokens.
+# One alternative per token shape, tried in order: comment, selector, atom,
+# word, number, the two string forms, then every multi-character operator.
+# The final alternative takes any other single character except whitespace,
+# so the matches cover everything but the whitespace between tokens.
 | let _TOKEN_RE = "(?s)#[^\\n\\r]*|\\.[A-Za-z_][A-Za-z0-9_]*|:[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*|[0-9]+(?:\\.[0-9]+)?|\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*'|//=|\\|\\||\\|=|&&|==|=~|!=|!~|<=|<<|>=|>>|\\+=|-=|->|\\*=|/=|%=|\\?\\?|\\.\\.|::|[^ \\t\\n\\r]"
-## An `s"` that starts a word begins an interpolated string, which needs the
-## character scanner to find its `${...}` segments.
+# An `s"` that starts a word begins an interpolated string, which needs the
+# character scanner to find its `${...}` segments.
 | let _INTERP_RE = "(?:^|[^A-Za-z0-9_])s\""
 |
 
-## Direct range comparisons instead of `regex_match`: identifier/digit
-## classification runs once per input character, and a regex-engine call
-## (cache lookup + match) is far more expensive here than a couple of
-## single-character string comparisons.
+# Direct range comparisons instead of `regex_match`: identifier/digit
+# classification runs once per input character, and a regex-engine call
+# (cache lookup + match) is far more expensive here than a couple of
+# single-character string comparisons.
 def _is_alpha(c):
   (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c == "_"
 end
@@ -64,12 +64,12 @@ def _tok(t, v):
   {t: t, v: v}
 end
 
-## Join a `[from, to)` slice of a char array back into a string. Indexing and
-## slicing a *string* by character position costs mq's host runtime O(position)
-## (it has to walk grapheme boundaries from the start each time), which makes a
-## naive character-at-a-time scan over the raw query string quadratic in its
-## length. `lex()` instead grapheme-splits the query into an array once up
-## front (array indexing is O(1)) and reassembles substrings with this helper.
+# Join a `[from, to)` slice of a char array back into a string. Indexing and
+# slicing a *string* by character position costs mq's host runtime O(position)
+# (it has to walk grapheme boundaries from the start each time), which makes a
+# naive character-at-a-time scan over the raw query string quadratic in its
+# length. `lex()` instead grapheme-splits the query into an array once up
+# front (array indexing is O(1)) and reassembles substrings with this helper.
 def _slice(chars, from, to):
   join(chars[from:to], "")
 end
@@ -277,13 +277,13 @@ def _lex_interp_string_chunks(chars, i, n, first_special):
            else: _finish_interp_segments(segs, seg_tail, seg_tail_len), j: j + 1}
 end
 
-## Find the index of the unescaped closing delimiter for a string literal
-## whose body scan hit a backslash at `pos` (so `chars[pos]` is always "\\").
-## Skips escape pairs the same way the foreach body below consumes them, so
-## it lands on the same position that scan would reach on its own -- without
-## allocating `range(pos, n - 1)` (the rest of the whole query) for every
-## escaped string literal, which would make lexing a query with several of
-## them quadratic in query length.
+# Find the index of the unescaped closing delimiter for a string literal
+# whose body scan hit a backslash at `pos` (so `chars[pos]` is always "\\").
+# Skips escape pairs the same way the foreach body below consumes them, so
+# it lands on the same position that scan would reach on its own -- without
+# allocating `range(pos, n - 1)` (the rest of the whole query) for every
+# escaped string literal, which would make lexing a query with several of
+# them quadratic in query length.
 def _find_string_close(chars, pos, n, delim):
   var k = pos
   | while (k < n && chars[k] != delim):
@@ -293,8 +293,8 @@ def _find_string_close(chars, pos, n, delim):
   | k
 end
 
-## Scan one token, returning the token and the next unread character index.
-## Whitespace and comments return no token.
+# Scan one token, returning the token and the next unread character index.
+# Whitespace and comments return no token.
 def _lex_one(chars, i, n):
   let c = chars[i]
   | if (_is_ws(c)):
@@ -384,31 +384,31 @@ def _lex_one(chars, i, n):
     end
 end
 
-## Tokenize an mq query string.
-##
-## Scanning a query one character at a time costs several interpreted calls
-## per character. The host regex engine can split the query into lexemes in one
-## native call instead, leaving only one classification step per lexeme.
-## Queries the lexeme split can't represent exactly fall back to the
-## character scanner: interpolated strings, unterminated strings, non-ASCII
-## characters outside strings, and multi-code-point graphemes (regex matches
-## are made of code points, while the character scanner works on graphemes).
+# Tokenize an mq query string.
+# 
+# Scanning a query one character at a time costs several interpreted calls
+# per character. The host regex engine can split the query into lexemes in one
+# native call instead, leaving only one classification step per lexeme.
+# Queries the lexeme split can't represent exactly fall back to the
+# character scanner: interpolated strings, unterminated strings, non-ASCII
+# characters outside strings, and multi-code-point graphemes (regex matches
+# are made of code points, while the character scanner works on graphemes).
 def lex(query):
   let fast = if (is_regex_match(query, _INTERP_RE) || !_single_code_point_graphemes(query)): None
              else: _lex_lexemes(query)
   | if (fast == None): _lex_chars(query) else: fast
 end
 
-## True when every grapheme other than "\r\n" is a single code point, so
-## lexeme boundaries can't split a grapheme.
+# True when every grapheme other than "\r\n" is a single code point, so
+# lexeme boundaries can't split a grapheme.
 def _single_code_point_graphemes(query):
   if (is_regex_match(query, "[^\\x00-\\x7F]")):
     len(graphemes(query)) + len(regex_match(query, "\r\n")) == len(regex_match(query, "(?s)."))
   else: true
 end
 
-## Classify the lexemes of `_TOKEN_RE`. Returns None when the query needs the
-## character scanner.
+# Classify the lexemes of `_TOKEN_RE`. Returns None when the query needs the
+# character scanner.
 def _lex_lexemes(query):
   var ok = true
   | let toks = foreach (lx, regex_match(query, _TOKEN_RE)):
@@ -440,7 +440,7 @@ def _lex_lexemes(query):
   | if (ok): toks + [_tok("eof", "")] else: None
 end
 
-## Resolve the escape sequences in a string literal's body.
+# Resolve the escape sequences in a string literal's body.
 def _unescape(s):
   let chars = graphemes(s)
   | let n = len(chars)
@@ -458,8 +458,8 @@ def _unescape(s):
     end, "")
 end
 
-## Tokenize by scanning characters. `foreach` collects emitted tokens in place;
-## the index skips characters already consumed by a multi-character token.
+# Tokenize by scanning characters. `foreach` collects emitted tokens in place;
+# the index skips characters already consumed by a multi-character token.
 def _lex_chars(query):
   let chars = graphemes(query)
   | let n = len(chars)
