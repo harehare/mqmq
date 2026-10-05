@@ -113,7 +113,7 @@ def _scan_until_brace(chars, start, n):
           if (c == "\n" || c == "\r" || c == "\r\n"): in_comment = false
           | k += 1
         end
-        elif (!is_empty(quote)) do
+        elif (len(quote) > 0) do
           if (c == "\\" && k + 1 < n):
             k += 2
           else do
@@ -231,7 +231,7 @@ def _lex_interp_string_chunks(chars, i, n, first_special):
             end
             else: parts += [span]
         end
-        | if (!is_empty(parts) || tail_len > 0) do
+        | if (len(parts) > 0 || tail_len > 0) do
             let segment = {kind: "text", val: if (tail_len == 0): join(parts, "")
                                                else: _join_interp_tail(parts, tail, tail_len)}
             | if (len(segs) >= 16) do
@@ -264,7 +264,7 @@ def _lex_interp_string_chunks(chars, i, n, first_special):
         end
         else: parts += [span]
     end
-  | if (!is_empty(parts) || tail_len > 0) do
+  | if (len(parts) > 0 || tail_len > 0) do
       let segment = {kind: "text", val: if (tail_len == 0): join(parts, "")
                                          else: _join_interp_tail(parts, tail, tail_len)}
       | if (len(segs) >= 16) do
@@ -332,7 +332,7 @@ def _lex_one(chars, i, n):
                     _tok("bool", word)
                   elif (word == "None"):
                     _tok("none", "")
-                  elif (!is_none(_KWS[word])):
+                  elif (_KWS[word] != None):
                     _tok("kw", word)
                   else:
                     _tok("ident", word)
@@ -376,7 +376,7 @@ def _lex_one(chars, i, n):
       let two = if (i + 1 < n): c + chars[i + 1] else: c
       | let op = if (two == "//" && i + 2 < n && chars[i + 2] == "="):
                    "//="
-                 elif (!is_none(_TWO_OPS[two])):
+                 elif (_TWO_OPS[two] != None):
                    two
                  else:
                    c
@@ -396,7 +396,7 @@ end
 def lex(query):
   let fast = if (is_regex_match(query, _INTERP_RE) || !_single_code_point_graphemes(query)): None
              else: _lex_lexemes(query)
-  | if (is_none(fast)): _lex_chars(query) else: fast
+  | if (fast == None): _lex_chars(query) else: fast
 end
 
 ## True when every grapheme other than "\r\n" is a single code point, so
@@ -417,7 +417,7 @@ def _lex_lexemes(query):
       | if ((c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c == "_"):
           if (lx == "true" || lx == "false"): {t: "bool", v: lx}
           elif (lx == "None"): {t: "none", v: ""}
-          elif (!is_none(_KWS[lx])): {t: "kw", v: lx}
+          elif (_KWS[lx] != None): {t: "kw", v: lx}
           else: {t: "ident", v: lx}
         elif (c >= "0" && c <= "9"): {t: "num", v: lx}
         elif (len(lx) == 1) do
@@ -470,7 +470,7 @@ def _lex_chars(query):
                  else do
                    let step = _lex_one(chars, pos, n)
                    | next = step[:next]
-                   | if (is_none(step[:tok])): continue
+                   | if (step[:tok] == None): continue
                      else: step[:tok]
                  end
                end
