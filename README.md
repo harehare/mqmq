@@ -184,6 +184,8 @@ printf '# Hello\n' | mq -L mqmq 'include "mqmq" | nodes | mqmq("module math: def
 | Unless | `unless (cond): a` (runs `a` only when `cond` is false) |
 | Pipe | `expr \| expr` |
 | Function call | `len("hello")`, `to_string(42)` |
+| Pipe inside a call argument | `join(xs \| reverse, ",")`, `len(xs \| sort)` (not inside array items or dict values, as in mq) |
+| Built-in with a piped receiver | `"a,b" \| split(",")`, `xs \| map(fn(x): x + 1 end)`, `xs \| join(",")`; the call's value becomes the first argument |
 | Coroutine / stream builtins | `to_coroutine([1,2,3]) \| collect()`, `stream_range(1, 10) \| take(3) \| collect()` |
 | Default parameters | `def f(x, y=1): x + y end` |
 | Array literal | `[1, 2, 3]` |

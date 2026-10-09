@@ -122,6 +122,12 @@ def test_eval_break_continue(query, md, expected):
   assert_eq(_run(query, md), expected)
 end
 
+def test_eval_pipe_inside_call_arguments():
+  assert_eq(_run("len([3, 1, 2] | sort)", ""), 3)
+  | assert_eq(_run("join([\"a\", \"b\"] | reverse, \"-\")", ""), "b-a")
+  | assert_eq(_run("max(1 | abs, 2 | abs)", ""), 2)
+end
+
 def test_eval_long_pipe_keeps_environment():
   let steps = join(map(range(1, 64), fn(i): "x += 1" end), " | ")
   | assert_eq(_run("var x = 0 | " + steps + " | x", ""), 64)
@@ -492,6 +498,48 @@ end
 # ])
 def test_eval_coroutine_stream_builtin_piped(query, md, expected):
   assert_eq(_run(query, md), expected)
+end
+
+# -- built-ins called pipe-style: the call's value is the first argument --
+
+# @parametrize([
+#   ["\"a,b\" | split(\",\")", ["a", "b"]],
+#   ["\"abc\" | contains(\"b\")", true],
+#   ["\"a-b\" | replace(\"-\", \"+\")", "a+b"],
+#   ["[1, 2, 3] | map(fn(x): x + 1 end)", [2, 3, 4]],
+#   ["[1, 2, 3] | filter(fn(x): x > 1 end)", [2, 3]],
+#   ["[1, 2, 3] | any(fn(x): x > 2 end)", true],
+#   ["[1, 2, 3] | fold(0, fn(acc, x): acc + x end)", 6],
+#   ["[3, 1, 2] | sort_by(fn(x): 0 - x end)", [3, 2, 1]],
+#   ["{a: 1} | set(\"b\", 2)", {a: 1, b: 2}],
+#   ["[\"a\", \"b\"] | join(\",\")", "a,b"],
+#   ["[1, 2, 3] | head(2)", [1, 2]],
+#   ["[1, 2, 3] | tail(2)", [2, 3]],
+#   ["\"a,b\" | split(\",\") | map(fn(x): upper(x) end)", ["A", "B"]],
+#   ["join([\"a\", \"b\"] | map(fn(x): upper(x) end), \",\")", "A,B"],
+# ])
+def test_eval_builtin_receiver_piped(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# Explicit-receiver calls keep their meaning, including the optional
+# separator of `join` and count of `head` and `tail`.
+# @parametrize([
+#   ["map([1, 2], fn(x): x * 2 end)", [2, 4]],
+#   ["join([\"a\", \"b\"])", "ab"],
+#   ["join([\"a\", \"b\"], \"-\")", "a-b"],
+#   ["head([1, 2, 3])", [1]],
+#   ["tail([1, 2, 3])", [3]],
+#   ["head([1, 2, 3], 2)", [1, 2]],
+# ])
+def test_eval_builtin_explicit_receiver(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# A user function bound under a built-in's name receives only the written
+# arguments.
+def test_eval_user_function_shadows_receiver_builtin():
+  assert_eq(_run("def map(f): f end | 5 | map(1)", None), 1)
 end
 
 # -- compiled evaluation: environment threading and control flow --

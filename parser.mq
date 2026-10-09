@@ -139,8 +139,13 @@ end
 # ── pipe list ─────────────────────────────────────────────────────────────────
 
 def _parse_pipe_list(toks, pos):
-  let first_r = _parse_stmt(toks, pos)
-  | let cur = first_r[:pos]
+  _parse_pipe_rest(toks, _parse_stmt(toks, pos))
+end
+
+# Continue a pipe after its first stage, which the caller has already parsed.
+# Returns first_r unchanged when no `|` follows.
+def _parse_pipe_rest(toks, first_r):
+  let cur = first_r[:pos]
   | if (!_at_op(toks, cur, "|")): first_r
     else do
       let second_r = _parse_stmt(toks, cur + 1)
@@ -765,6 +770,12 @@ def _find_closer(toks, pos):
   | cur
 end
 
+# A call argument may be a pipe, as in mq: `join(xs | map(f), ",")`. The
+# first stage keeps the cheap list-item path; `|` is checked once after it.
+def _parse_arg(toks, pos):
+  _parse_pipe_rest(toks, _parse_list_expr(toks, pos))
+end
+
 # Collect list elements through the host foreach accumulator. Advancing cur
 # past an expression lets later positions skip tokens consumed by that item.
 # This avoids copying the growing result array for every element. The empty
@@ -774,7 +785,7 @@ def _parse_call_args(toks, pos):
   if (_at_op(toks, pos, ")")):
     {args: [], pos: pos + 1}
   else do
-    let first_arg = _parse_list_expr(toks, pos)
+    let first_arg = _parse_arg(toks, pos)
     | var cur = _skip_v(toks, first_arg[:pos], ",")
     | if (_at_op(toks, cur, ")")):
         {args: [first_arg[:node]], pos: cur + 1}
@@ -783,7 +794,7 @@ def _parse_call_args(toks, pos):
           if (i < cur): continue
           elif (_at_op(toks, cur, ")") || _at_eof(toks, cur)): break
           else do
-            let ar = _parse_list_expr(toks, cur)
+            let ar = _parse_arg(toks, cur)
             | cur = _skip_v(toks, ar[:pos], ",")
             | ar[:node]
           end
