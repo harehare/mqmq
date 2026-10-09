@@ -353,14 +353,18 @@ let _BUILTINS = {
   "sort": fn(a0, a1, a2, n, value, env): sort(a0) end,
   "reverse": fn(a0, a1, a2, n, value, env): reverse(a0) end,
   "head": fn(a0, a1, a2, n, value, env):
-    let count = if (a1 == None): 1 else: a1
-    | a0[0:count]
+    let piped = n == 1 && is_number(a0) && is_array(value)
+    | let arr = if (piped): value else: a0
+    | let count = if (piped): a0 elif (a1 == None): 1 else: a1
+    | arr[0:count]
   end,
   "tail": fn(a0, a1, a2, n, value, env):
-    let count = if (a1 == None): 1 else: a1
-    | let ln = len(a0)
+    let piped = n == 1 && is_number(a0) && is_array(value)
+    | let arr = if (piped): value else: a0
+    | let count = if (piped): a0 elif (a1 == None): 1 else: a1
+    | let ln = len(arr)
     | let from = if (ln - count < 0): 0 else: ln - count
-    | a0[from:ln]
+    | arr[from:ln]
   end,
   "zip": fn(a0, a1, a2, n, value, env): zip(a0, a1) end,
 
@@ -420,7 +424,13 @@ let _BUILTINS = {
   "replace": fn(a0, a1, a2, n, value, env): replace(a0, a1, a2) end,
   "gsub": fn(a0, a1, a2, n, value, env): gsub(a0, a1, a2) end,
   "split": fn(a0, a1, a2, n, value, env): split(a0, a1) end,
-  "join": fn(a0, a1, a2, n, value, env): join(a0, if (a1 == None): "" else: a1) end,
+  # `join(sep)`, `head(n)` and `tail(n)` take the piped array as receiver; an
+  # array argument keeps the explicit form, where the separator or count is
+  # optional.
+  "join": fn(a0, a1, a2, n, value, env):
+    if (n == 1 && is_array(value) && !is_array(a0)): join(value, a0)
+    else: join(a0, if (a1 == None): "" else: a1)
+  end,
   "trim": fn(a0, a1, a2, n, value, env): trim(a0) end,
   "ltrim": fn(a0, a1, a2, n, value, env): ltrim(a0) end,
   "rtrim": fn(a0, a1, a2, n, value, env): rtrim(a0) end,
@@ -481,6 +491,18 @@ let _BUILTINS = {
   "error": fn(a0, a1, a2, n, value, env): error(a0) end,
   "debug": fn(a0, a1, a2, n, value, env): debug(a0) end,
   "env": fn(a0, a1, a2, n, value, env): env end,
+}
+# Built-ins whose first argument is the receiver and that always take exactly
+# this many arguments. Called with one fewer, as in `xs | map(f)`, the call's
+# value is filled in as the first argument. Built-ins with optional arguments
+# or their own handling of a missing receiver (`take`, `join`, `head`, `to_h`,
+# `to_code`, ...) are not listed.
+| let _RECEIVER_ARITY = {
+  "map": 2, "filter": 2, "flat_map": 2, "sort_by": 2, "group_by": 2,
+  "each": 2, "any": 2, "all": 2, "split": 2, "contains": 2,
+  "starts_with": 2, "ends_with": 2, "regex_match": 2, "get": 2, "del": 2,
+  "push": 2, "attr": 2, "zip": 2,
+  "fold": 3, "replace": 3, "gsub": 3, "set": 3, "set_attr": 3
 }
 |
 
@@ -709,6 +731,43 @@ end
 # three arguments pass them straight to the implementation without building
 # an argument array.
 def _comp_call(ast):
+  let arity = _RECEIVER_ARITY[ast[:name]]
+  | if (arity != None && len(ast[:args]) == arity - 1): _comp_receiver_call(ast)
+    else: _comp_direct_call(ast)
+end
+
+# `xs | f(a)` for a built-in that takes its receiver first: the call's value is
+# passed ahead of the written arguments. A user function bound under the same
+# name still receives only the written arguments.
+def _comp_receiver_call(ast):
+  let name = ast[:name]
+  | let impl = _builtin_impl(name)
+  | let args = foreach (a, ast[:args]): _as_v(_comp(a)) end
+  | if (len(args) == 1) do
+      let a0 = args[0]
+      | [true, fn(value, env):
+          let named = env[name]
+          | let x = a0(value, env)
+          | if (named != None && has(named, "kind") && named[:kind] == "fn"):
+              _call_user_fn1(named, x, value, env)
+            else: impl(value, x, None, 2, value, env)
+        end]
+    end
+    else do
+      let a0 = args[0]
+      | let a1 = args[1]
+      | [true, fn(value, env):
+          let named = env[name]
+          | let x = a0(value, env)
+          | let y = a1(value, env)
+          | if (named != None && has(named, "kind") && named[:kind] == "fn"):
+              _call_user_fn(named, [x, y], value, env)
+            else: impl(value, x, y, 3, value, env)
+        end]
+    end
+end
+
+def _comp_direct_call(ast):
   let name = ast[:name]
   | let impl = _builtin_impl(name)
   | let args = foreach (a, ast[:args]): _as_v(_comp(a)) end

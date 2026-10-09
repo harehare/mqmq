@@ -65,6 +65,16 @@ def test_parse_identifier_rhs_keeps_precedence_and_postfix():
   | assert_eq(suppressed[:right][:kind], "trysuppress")
 end
 
+# A call argument may itself be a pipe, as in mq. Array items and dictionary
+# values may not.
+def test_parse_pipe_inside_call_arguments():
+  let call = _parse("f(1 | g, 2 | h | i, 3)")
+  | assert_eq(call[:kind], "call")
+  | assert_eq(map(call[:args], fn(arg): arg[:kind] end), ["pipe", "pipe", "num"])
+  | assert_eq(len(call[:args][1][:stages]), 3)
+  | assert_eq(_parse("f(1)")[:args], [{kind: "num", val: 1}])
+end
+
 def test_parse_flat_pipes_and_long_binary_chains():
   let pipe = _parse("let x = 1 | x + 2 | . | x")
   | assert_eq(pipe[:kind], "pipe")
