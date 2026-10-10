@@ -116,7 +116,7 @@ printf '# Hello\n' | mq -L mqmq 'include "mqmq" | nodes | mqmq("try: error(\"boo
 # => boom
 
 # while + break
-printf '# Hello\n' | mq -L mqmq 'include "mqmq" | nodes | mqmq("var i = 0 | while (true): i += 1 | if (i == 5): break i end end")'
+printf '# Hello\n' | mq -L mqmq 'include "mqmq" | nodes | mqmq("var i = 0 | while (true): i += 1 | if (i == 5): break: i end end")'
 # => 5
 
 # until (loops while the condition is false)
@@ -161,7 +161,9 @@ printf '# Hello\n' | mq -L mqmq 'include "mqmq" | nodes | mqmq("module math: def
 
 | Feature | Example |
 |---------|---------|
-| Selectors | `.h1`, `.h2`, `.h`, `.text`, `.list`, `.table`, `.table_cell`, `.blockquote`, `.thematic_break`, `.definition`, `.html` |
+| Selectors | Every selector mq has except `..`, `.<>`, `.[]` and `.[][]`: `.h1`..`.h6`, `.h`, `.text`, `.list`, `.table`, `.blockquote`, `.link`, `.url`, `.image`, `.strong`, `.emphasis`, `.code_inline`, `.lang`, `.checked`, `.value`, `.title`, and so on. Those without an interpreter-specific implementation apply the host's selector to each node |
+| Built-ins | About 420: the core ones are implemented here, and the rest (strings, math, arrays, dicts, regex, encodings, dates, Markdown constructors, `to_*`/`is_*`) hand their arguments to the host function of the same name. A built-in is also a function value: `map(xs, len)`, `let f = to_string \| f(1)` |
+| Parenthesis-free calls | In a pipe step, branch or body a function with at most one required parameter is called with the piped value: `"abc" \| upcase`, `def f(x): x + 1; \| 5 \| f` |
 | Dot (identity) | `.` |
 | `nodes` (all input nodes) | `nodes` |
 | Arithmetic | `1 + 2`, `x * 3`, `10 / 2` |
@@ -196,11 +198,19 @@ printf '# Hello\n' | mq -L mqmq 'include "mqmq" | nodes | mqmq("module math: def
 | While loop | `while (cond): body end` |
 | Until loop | `until (cond): body end` (loops while `cond` is false) |
 | Foreach loop | `foreach (x, arr): body end` |
-| Break / continue | `while (cond): break end`, `foreach (x, arr): continue end` |
+| Loop | `loop: ... end` repeats until a `break`; a `while` / `until` / `loop` iteration receives the previous iteration's value, and the loop's value is that of the last completed one (`while` / `until`: None if there was none; `loop`: the input) |
+| Break / continue | `while (cond): break end`, `foreach (x, arr): continue end`. A plain `break` ends the loop with the results so far (`foreach`) or the last completed iteration's value (`while` / `until` / `loop`); `break: expr` (or the older `break expr`) ends it with `expr`. Both work anywhere in an operand, in an `elif` or loop condition, or on the right of `&&` / `||` / `??`, e.g. `foreach (x, xs): [if (x > 1): break else: x, 9]`; outside a loop they are an error |
+| Bindings keep the piped value | `let`, `var`, destructuring, `x += 1`, `def` and `module` pass the value they received on, as in mq: `7 \| let y = 3 \| .` is `7` |
+| Argument count | A user function must get every parameter without a default and no more than it declares, otherwise `Invalid number of arguments`; the piped value counts as the first argument |
 | Try/catch | `try: risky() catch: fallback` |
 | Try/catch with error binder | `try: risky() catch(e): e[:message]` |
 | Pattern matching | `match (v): \| 1: "one" \| [x]: x \| {name}: name \| x if (x > 0): "pos" \| _: "other" end` |
 | User-defined functions | `def f(x): x * 2 end \| f(5)`, or `def f(x): x * 2;` |
+| Omitted block terminator | `map(xs, fn(x): x + 1)`, `[fn(x): x, 1]`, `{a: fn(x): x}`, `[foreach (x, xs): x * 2, 3]`; a `fn`, `def`, `do`, `while`, `until`, `foreach` or `module` body ends at `,`, `)`, `]` or `}` (and, for all but `fn`, at EOF), so `end` / `;` can be dropped there. `match` still needs its `end` |
+| Arrow and implicit lambdas | `->(x): x + 1`, `fn: self + 1` (same as `fn(self): self \| self + 1`), `fn(x) do x + 1 end` |
+| Call of a computed function | `(fn(x): x + 1)(2)`, `fns[0](2)`, `(f)(1)(2)` |
+| Piped value as first argument | `10 \| f()` for `def f(x): x`, and `10 \| g(1)` for `def g(x, y): ...`: a call that is one required argument short takes the piped value first |
+| Statement after a closed `def` | `def f(x): x + 1; f(1)` (no `\|` needed after a `def` closed by `;` or `end`) |
 | Inline module + `::` | `module m: def f(x): x; end \| m::f(1)` |
 
 ## Known Limitations
@@ -208,11 +218,13 @@ printf '# Hello\n' | mq -L mqmq 'include "mqmq" | nodes | mqmq("module math: def
 - **Streaming semantics**: Selectors (`.h1`, `.text`, etc.) return arrays rather than individual streaming values. Piping a selector into a per-node transform (`| to_md_text`) operates on the whole array, not each node independently.
 - **No file-based `import`/`include`**: inline `module name: ... end` is supported, but mqmq's own interpreted language can't load and namespace a *separate* `.mq` file at runtime the way real `mq`'s `import "file"` / `include "file"` do. That would require re-entering the whole lex-parse-eval pipeline recursively with its own file resolution, out of scope for a single-query meta-interpreter.
 - **`|=` in-place path assignment is not implemented**: real `mq`'s `.code.value |= "x"` mutates a value at a selector path. mqmq only supports simple `var x |= y` on a plain variable, currently treated the same as `x = y`.
-- **Every statement must be `|`-chained**: real `mq` allows bare newline-separated statements in some contexts, such as consecutive `def`s inside a `module` block or at the top of a file. mqmq's parser always requires an explicit `|` between statements, including inside `module` bodies.
+- **Statements must be `|`-chained, except after a closed `def`**: real `mq` allows bare newline-separated statements in some contexts. mqmq accepts a statement directly after a `def` closed by `;` or `end` (so consecutive `def`s work, including inside `module` bodies), but every other statement boundary needs an explicit `|`.
 - **Match patterns don't nest**: array patterns (`[a, b]`, `[head, ..tail]`) and dict patterns (`{name, age}`) only bind identifiers or a rest identifier. They can't contain nested literal or type sub-patterns the way real `mq` allows.
 - **`catch(e)` binder isn't scope-restricted**: real `mq` scopes the bound error variable to the catch expression only. mqmq binds it into the same flat environment as `let`/`var`, so (consistent with how mqmq handles all other bindings) it stays visible after the `try` if nothing else overwrites it.
 - **`@` conversion operator**: reimplemented from scratch (see `_eval_convert` in `eval.mq`) since mqmq's atoms evaluate to plain strings rather than real `mq`'s distinct Symbol runtime type, so it can't delegate to the host `@` operator. Covers headings, blockquote, list item, strong, strikethrough, horizontal rule, links, `base64`/`md5`/`sha256`/`uri`/`urid`/`html`/`text`. The `:sh` (shell execution) target is intentionally not implemented.
-- **Partial builtin coverage**: real `mq` has grown a large standard library (HTTP, file I/O, CSV/TOML parsing, statistics, and more). mqmq's meta-evaluator only implements the core language and a modest set of builtins used by its own examples and tests.
+- **Built-ins that reach outside the query are not available**: files (`read_file`, `write_file`, `walk_files`, ...), network (`http_*`), processes (`system`), standard input, and `halt`, because a query run by mqmq should not be able to touch its host. Functions that return functions (`comp`, `juxt`, `complement`, `partial`), the variadic `array`, `join_by`, and `in` (a keyword here) are missing too.
+- **No generators**: `yield` and the coroutine built-ins (`next`, `send`, `close`) need a suspendable evaluator, which a closure-compiling interpreter does not have.
+- **Higher-order built-ins**: an mqmq function passed to a delegated built-in is wrapped for the host, so it must take the number of arguments the built-in calls it with.
 - **No `yield` keyword of its own**: real `mq` compiles a generator to a bytecode chunk its VM can suspend mid-frame. Any host function that lexically contains `yield:` becomes a coroutine on every call, so wiring `yield:` into `mq_eval`'s generic dispatch would turn every evaluation into a suspended coroutine, not just the ones hitting an interpreted `yield`. mqmq does forward the eager coroutine/stream value builtins (`to_coroutine`, `stream_range`, `collect`, `take`, `skip`, `take_while`, `skip_while`, `next`, `send`, `close`, `is_coroutine`, `iterables`), so a query can build and drain a coroutine, it just can't author one with `yield`.
 
 ## Performance Notes
@@ -224,6 +236,7 @@ printf '# Hello\n' | mq -L mqmq 'include "mqmq" | nodes | mqmq("module math: def
 I compared representations on a minimal `fib(20)` evaluator before choosing: a dict AST with string kinds took 41 ms, a flat array AST with integer opcodes took 34 ms, and closures took 21–27 ms. A flat AST alone is worth about 17%, because the host indexes an array only slightly faster than a dict. It would also change the parser output and every test that builds an AST by hand. Compiling the parser's dict AST keeps both unchanged.
 
 - **Purity analysis.** Each node compiles to a `[pure, code]` pair. A pure node cannot bind a name or raise `break`/`continue`, so its code returns the value alone and allocates no `{val, env}` pair. Purity is derived bottom-up, so `n - 1`, an `if` over pure branches, and a pipe of pure stages all take the cheap path. Other nodes return `{val, env[, ctrl]}`.
+- **`break` / `continue` inside an operand.** Only statement positions (pipe stages, branches, `do` / `try` bodies) pass a signal on, so a loop body that contains `break` or `continue` is rewritten once, when the loop is compiled: an operand that can signal is evaluated first into a temporary by a `hoist` node, which returns the signal at once, and the operator then uses the temporary. A right operand of `&&` / `||` / `??` and a loop condition return the signal from their own node, and an `elif` condition that can signal moves the rest of the chain into the `else` of a nested `if`. A loop whose body has neither keyword is not scanned beyond one walk, and pays nothing at run time.
 - **Built-ins are resolved when a call is compiled.** `_BUILTINS` maps each name to one implementation, so a call no longer scans a chain of name comparisons (up to about 900 ns for a name late in the chain). Calls of up to three arguments pass them straight to the implementation without building an argument array. A user function bound under the same name still takes precedence at run time.
 - **Literals are built once.** An array or dictionary made only of numbers, strings, booleans, `None`, atoms, and other such literals is constructed at compile time, and every evaluation returns the same immutable value.
 - **Operators are chosen at compile time.** `+`, `-`, `<`, `==` and the other eager operators compile to a closure that applies the host operator directly. A numeric literal on the right is read from the AST once, so it costs no call.
@@ -274,7 +287,7 @@ A few characteristics of the host `mq` runtime matter a lot for code written, li
 Tests are written with [`mq-test`](https://github.com/harehare/mq) (`def test_*(): assert_eq(...) end`, auto-discovered by name), matching the convention of `mq`'s own module test suites. Most cases are table-driven with `# @parametrize([[query, ..., expected], ...])` (see any `*_tests.mq` file) rather than one `def` per case, so adding a case is usually a new row, not a new function:
 
 ```sh
-mq-test lexer_tests.mq parser_tests.mq eval_tests.mq mqmq_tests.mq
+mq-test lexer_tests.mq parser_tests.mq eval_tests.mq builtins_tests.mq mqmq_tests.mq
 ```
 
 or, to discover and run every `*_tests.mq` file in the directory:
