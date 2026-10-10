@@ -226,3 +226,15 @@ end
 def test_lexeme_fast_path_used():
   assert_eq(is_none(lexer::_lex_lexemes("let x = \"日本語\" | x + 1")), false)
 end
+
+# @parametrize([
+#   ["\"a\\rb\"", "a\rb"],
+#   ["\"\\x41\"", "A"],
+#   ["\"\\u0041\"", "A"],
+#   ["\"\\u{1F600}\"", "😀"],
+#   ["\"\\u{41}\\u{42}\"", "AB"],
+#   ["\"a\\qb\"", "aqb"],
+# ])
+def test_lex_string_escapes(source, expected):
+  assert_eq(lexer::lex(source)[0][:v], expected)
+end

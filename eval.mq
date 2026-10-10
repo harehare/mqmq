@@ -21,10 +21,6 @@ import "yaml"
     "+": true, "-": true, "*": true, "/": true, "%": true,
     "==": true, "!=": true, "<": true, "<=": true, ">": true, ">=": true,
   }
-| let _NON_TEXT_NAMES = {
-    h1: true, h2: true, h3: true, h4: true, h5: true, h6: true,
-    code: true, list: true, html: true,
-  }
 |
 
 # ── environment helpers ───────────────────────────────────────────────────────
@@ -235,8 +231,72 @@ def _sel_pred(name):
   elif (name == "thematic_break"): fn(node): to_md_name(node) == "Horizontal_rule" end
   elif (name == "html"): fn(node): is_html(node) end
   elif (name == "definition"): fn(node): to_md_name(node) == "definition" end
-  elif (name == "text"): fn(node): _NON_TEXT_NAMES[to_md_name(node)] == None end
   else: None
+end
+
+# Selectors without an interpreter-specific implementation apply the host's
+# selector to each node. A node it does not match yields None and is dropped.
+let _HOST_SELECTORS = {
+  "text": fn(node): node | .text end,
+  "align": fn(node): node | .align end,
+  "alt": fn(node): node | .alt end,
+  "break": fn(node): node | .break end,
+  "callout": fn(node): node | .callout end,
+  "checked": fn(node): node | .checked end,
+  "children": fn(node): node | .children end,
+  "code_inline": fn(node): node | .code_inline end,
+  "column": fn(node): node | .column end,
+  "delete": fn(node): node | .delete end,
+  "depth": fn(node): node | .depth end,
+  "done": fn(node): node | .done end,
+  "embed": fn(node): node | .embed end,
+  "emphasis": fn(node): node | .emphasis end,
+  "end_line": fn(node): node | .end_line end,
+  "fence": fn(node): node | .fence end,
+  "footnote": fn(node): node | .footnote end,
+  "footnote_ref": fn(node): node | .footnote_ref end,
+  "heading": fn(node): node | .heading end,
+  "horizontal_rule": fn(node): node | .horizontal_rule end,
+  "ident": fn(node): node | .ident end,
+  "image": fn(node): node | .image end,
+  "image_ref": fn(node): node | .image_ref end,
+  "index": fn(node): node | .index end,
+  "inline_math": fn(node): node | .inline_math end,
+  "kind": fn(node): node | .kind end,
+  "label": fn(node): node | .label end,
+  "lang": fn(node): node | .lang end,
+  "level": fn(node): node | .level end,
+  "line": fn(node): node | .line end,
+  "link": fn(node): node | .link end,
+  "link_ref": fn(node): node | .link_ref end,
+  "math": fn(node): node | .math end,
+  "math_inline": fn(node): node | .math_inline end,
+  "mdx_flow_expression": fn(node): node | .mdx_flow_expression end,
+  "mdx_js_esm": fn(node): node | .mdx_js_esm end,
+  "mdx_jsx_flow_element": fn(node): node | .mdx_jsx_flow_element end,
+  "mdx_jsx_text_element": fn(node): node | .mdx_jsx_text_element end,
+  "mdx_text_expression": fn(node): node | .mdx_text_expression end,
+  "meta": fn(node): node | .meta end,
+  "name": fn(node): node | .name end,
+  "ordered": fn(node): node | .ordered end,
+  "row": fn(node): node | .row end,
+  "strong": fn(node): node | .strong end,
+  "task": fn(node): node | .task end,
+  "title": fn(node): node | .title end,
+  "todo": fn(node): node | .todo end,
+  "toml": fn(node): node | .toml end,
+  "url": fn(node): node | .url end,
+  "value": fn(node): node | .value end,
+  "values": fn(node): node | .values end,
+  "wikilink": fn(node): node | .wikilink end,
+  "yaml": fn(node): node | .yaml end,
+}
+|
+
+# Apply a host selector to a node or to every node of an array, keeping what it finds.
+def _apply_host_sel(f, value):
+  let found = map(if (is_array(value)): value else: [value], f)
+  | filter(found, fn(r): r != None end)
 end
 
 # Filter a value (array of nodes or a single node) by a selector predicate.
@@ -453,9 +513,8 @@ let _BUILTINS = {
   "log": fn(a0, a1, a2, n, value, env): ln(a0) end,
 
   # Node / markdown operations
-  "select": fn(a0, a1, a2, n, value, env):
-    filter(if (is_array(value)): value else: [value], fn(node): _apply1(a0, node, env) end)
-  end,
+  # select(v, cond): v when cond is truthy, else None (`v | select(cond)`).
+  "select": fn(a0, a1, a2, n, value, env): if (a1): a0 else: None end,
   "attr": fn(a0, a1, a2, n, value, env): attr(a0, a1) end,
   "set_attr": fn(a0, a1, a2, n, value, env): set_attr(a0, a1, a2) end,
   "to_md_text": fn(a0, a1, a2, n, value, env): to_md_text(a0) end,
@@ -501,8 +560,364 @@ let _BUILTINS = {
   "map": 2, "filter": 2, "flat_map": 2, "sort_by": 2, "group_by": 2,
   "each": 2, "any": 2, "all": 2, "split": 2, "contains": 2,
   "starts_with": 2, "ends_with": 2, "regex_match": 2, "get": 2, "del": 2,
-  "push": 2, "attr": 2, "zip": 2,
+  "push": 2, "attr": 2, "zip": 2, "select": 2,
   "fold": 3, "replace": 3, "gsub": 3, "set": 3, "set_attr": 3
+}
+|
+
+# ── built-ins delegated to the host ─────────────────────────────────────────────
+#
+# These built-ins have no interpreter-specific behavior, so each one hands its
+# arguments to the host function of the same name. The table is derived from the
+# signatures `mq help <name>` prints. Functions that reach outside the query
+# (files, network, processes, standard input, exit) are deliberately absent, as
+# are those that return or take a variable number of functions.
+# An mqmq function value passed as an argument is wrapped by _hf so the host can
+# call it.
+
+# A host function standing in for an mqmq function value (anything else is
+# passed through). A user function takes as many arguments as it declares; a
+# built-in used as a value takes `hint`, the number the host calls it with.
+def _hf(f, env, hint):
+  if (is_dict(f) && has(f, "kind") && f[:kind] == "fn") do
+      let builtin = has(f, "body") && is_dict(f[:body]) && f[:body][:kind] == "builtin"
+      | let k = if (builtin): hint else: len(f[:params])
+      | if (k >= 3): fn(a, b, c): _call_user_fn(f, [a, b, c], None, env) end
+        elif (k == 2): fn(a, b): _apply2(f, a, b, env) end
+        else: fn(a): _apply1(f, a, env) end
+    end
+  else: f
+end
+|
+
+let _EXT_BUILTINS = {
+  "accumulate": fn(a0, a1, a2, n, value, env): if (n >= 3): accumulate(a0, a1, _hf(a2, env, 2)) elif (n == 2): accumulate(a0, a1) else: accumulate(a0) end,
+  "acos": fn(a0, a1, a2, n, value, env): acos(a0) end,
+  "add": fn(a0, a1, a2, n, value, env): if (n >= 2): add(a0, a1) else: add(a0) end,
+  "all_symbols": fn(a0, a1, a2, n, value, env): all_symbols() end,
+  "and": fn(a0, a1, a2, n, value, env): if (n >= 2): and(a0, a1) else: and(a0) end,
+  "arrays": fn(a0, a1, a2, n, value, env): arrays(a0) end,
+  "ascii_downcase": fn(a0, a1, a2, n, value, env): ascii_downcase(a0) end,
+  "ascii_upcase": fn(a0, a1, a2, n, value, env): ascii_upcase(a0) end,
+  "asin": fn(a0, a1, a2, n, value, env): asin(a0) end,
+  "atan": fn(a0, a1, a2, n, value, env): atan(a0) end,
+  "atan2": fn(a0, a1, a2, n, value, env): if (n >= 2): atan2(a0, a1) else: atan2(a0) end,
+  "band": fn(a0, a1, a2, n, value, env): if (n >= 2): band(a0, a1) else: band(a0) end,
+  "base64": fn(a0, a1, a2, n, value, env): base64(a0) end,
+  "base64d": fn(a0, a1, a2, n, value, env): base64d(a0) end,
+  "base64d_bytes": fn(a0, a1, a2, n, value, env): base64d_bytes(a0) end,
+  "base64url": fn(a0, a1, a2, n, value, env): base64url(a0) end,
+  "base64urld": fn(a0, a1, a2, n, value, env): base64urld(a0) end,
+  "base64urld_bytes": fn(a0, a1, a2, n, value, env): base64urld_bytes(a0) end,
+  "basename": fn(a0, a1, a2, n, value, env): basename(a0) end,
+  "between": fn(a0, a1, a2, n, value, env): if (n >= 3): between(a0, a1, a2) elif (n == 2): between(a0, a1) else: between(a0) end,
+  "bnot": fn(a0, a1, a2, n, value, env): bnot(a0) end,
+  "booleans": fn(a0, a1, a2, n, value, env): booleans(a0) end,
+  "bor": fn(a0, a1, a2, n, value, env): if (n >= 2): bor(a0, a1) else: bor(a0) end,
+  "bsearch": fn(a0, a1, a2, n, value, env): if (n >= 2): bsearch(a0, a1) else: bsearch(a0) end,
+  "bytes": fn(a0, a1, a2, n, value, env): bytes(a0) end,
+  "capture": fn(a0, a1, a2, n, value, env): if (n >= 2): capture(a0, a1) else: capture(a0) end,
+  "casefold": fn(a0, a1, a2, n, value, env): casefold(a0) end,
+  "cbrt": fn(a0, a1, a2, n, value, env): cbrt(a0) end,
+  "center": fn(a0, a1, a2, n, value, env): if (n >= 3): center(a0, a1, a2) elif (n == 2): center(a0, a1) else: center(a0) end,
+  "chars": fn(a0, a1, a2, n, value, env): chars(a0) end,
+  "chomp": fn(a0, a1, a2, n, value, env): chomp(a0) end,
+  "chunk_by": fn(a0, a1, a2, n, value, env): if (n >= 2): chunk_by(a0, _hf(a1, env, 1)) else: chunk_by(a0) end,
+  "chunks": fn(a0, a1, a2, n, value, env): if (n >= 2): chunks(a0, a1) else: chunks(a0) end,
+  "clamp": fn(a0, a1, a2, n, value, env): if (n >= 3): clamp(a0, a1, a2) elif (n == 2): clamp(a0, a1) else: clamp(a0) end,
+  "coalesce": fn(a0, a1, a2, n, value, env): if (n >= 2): coalesce(a0, a1) else: coalesce(a0) end,
+  "combinations": fn(a0, a1, a2, n, value, env): combinations(a0) end,
+  "common_indent": fn(a0, a1, a2, n, value, env): common_indent(a0) end,
+  "compact_map": fn(a0, a1, a2, n, value, env): if (n >= 2): compact_map(a0, _hf(a1, env, 1)) else: compact_map(a0) end,
+  "convert": fn(a0, a1, a2, n, value, env): if (n >= 2): convert(a0, a1) else: convert(a0) end,
+  "cos": fn(a0, a1, a2, n, value, env): cos(a0) end,
+  "cosh": fn(a0, a1, a2, n, value, env): cosh(a0) end,
+  "count_by": fn(a0, a1, a2, n, value, env): if (n >= 2): count_by(a0, _hf(a1, env, 1)) else: count_by(a0) end,
+  "count_substr": fn(a0, a1, a2, n, value, env): if (n >= 2): count_substr(a0, a1) else: count_substr(a0) end,
+  "css": fn(a0, a1, a2, n, value, env): if (n >= 2): css(a0, a1) else: css(a0) end,
+  "css_attr": fn(a0, a1, a2, n, value, env): if (n >= 3): css_attr(a0, a1, a2) elif (n == 2): css_attr(a0, a1) else: css_attr(a0) end,
+  "css_text": fn(a0, a1, a2, n, value, env): if (n >= 2): css_text(a0, a1) else: css_text(a0) end,
+  "cumavg": fn(a0, a1, a2, n, value, env): cumavg(a0) end,
+  "cumsum": fn(a0, a1, a2, n, value, env): cumsum(a0) end,
+  "date_add": fn(a0, a1, a2, n, value, env): if (n >= 3): date_add(a0, a1, a2) elif (n == 2): date_add(a0, a1) else: date_add(a0) end,
+  "date_diff": fn(a0, a1, a2, n, value, env): if (n >= 3): date_diff(a0, a1, a2) elif (n == 2): date_diff(a0, a1) else: date_diff(a0) end,
+  "date_relative": fn(a0, a1, a2, n, value, env): if (n >= 2): date_relative(a0, a1) else: date_relative(a0) end,
+  "decode": fn(a0, a1, a2, n, value, env): if (n >= 2): decode(a0, a1) else: decode(a0) end,
+  "decrease_header_depth": fn(a0, a1, a2, n, value, env): decrease_header_depth(a0) end,
+  "dedent": fn(a0, a1, a2, n, value, env): dedent(a0) end,
+  "del_path": fn(a0, a1, a2, n, value, env): if (n >= 2): del_path(a0, a1) else: del_path(a0) end,
+  "del_paths": fn(a0, a1, a2, n, value, env): if (n >= 2): del_paths(a0, a1) else: del_paths(a0) end,
+  "demote_heading": fn(a0, a1, a2, n, value, env): demote_heading(a0) end,
+  "describe": fn(a0, a1, a2, n, value, env): describe(a0) end,
+  "dicts": fn(a0, a1, a2, n, value, env): dicts(a0) end,
+  "difference": fn(a0, a1, a2, n, value, env): if (n >= 2): difference(a0, a1) else: difference(a0) end,
+  "dirname": fn(a0, a1, a2, n, value, env): dirname(a0) end,
+  "div": fn(a0, a1, a2, n, value, env): if (n >= 2): div(a0, a1) else: div(a0) end,
+  "downcase": fn(a0, a1, a2, n, value, env): downcase(a0) end,
+  "encode": fn(a0, a1, a2, n, value, env): if (n >= 2): encode(a0, a1) else: encode(a0) end,
+  "eq": fn(a0, a1, a2, n, value, env): if (n >= 2): eq(a0, a1) else: eq(a0) end,
+  "exp": fn(a0, a1, a2, n, value, env): exp(a0) end,
+  "explode": fn(a0, a1, a2, n, value, env): explode(a0) end,
+  "extname": fn(a0, a1, a2, n, value, env): extname(a0) end,
+  "extract_urls": fn(a0, a1, a2, n, value, env): extract_urls(a0) end,
+  "fill": fn(a0, a1, a2, n, value, env): if (n >= 2): fill(a0, a1) else: fill(a0) end,
+  "find": fn(a0, a1, a2, n, value, env): if (n >= 2): find(a0, _hf(a1, env, 1)) else: find(a0) end,
+  "find_index": fn(a0, a1, a2, n, value, env): if (n >= 2): find_index(a0, _hf(a1, env, 1)) else: find_index(a0) end,
+  "flip": fn(a0, a1, a2, n, value, env): if (n >= 3): flip(_hf(a0, env, 2), a1, a2) elif (n == 2): flip(_hf(a0, env, 2), a1) else: flip(_hf(a0, env, 2)) end,
+  "fold_while": fn(a0, a1, a2, n, value, env): if (n >= 3): fold_while(a0, a1, _hf(a2, env, 2)) elif (n == 2): fold_while(a0, a1) else: fold_while(a0) end,
+  "frequencies_by": fn(a0, a1, a2, n, value, env): if (n >= 2): frequencies_by(a0, _hf(a1, env, 1)) else: frequencies_by(a0) end,
+  "from_date": fn(a0, a1, a2, n, value, env): from_date(a0) end,
+  "from_entries": fn(a0, a1, a2, n, value, env): from_entries(a0) end,
+  "from_hex": fn(a0, a1, a2, n, value, env): from_hex(a0) end,
+  "from_html": fn(a0, a1, a2, n, value, env): from_html(a0) end,
+  "frontmatter": fn(a0, a1, a2, n, value, env): frontmatter(a0) end,
+  "gcd": fn(a0, a1, a2, n, value, env): if (n >= 2): gcd(a0, a1) else: gcd(a0) end,
+  "geomean": fn(a0, a1, a2, n, value, env): geomean(a0) end,
+  "get_location": fn(a0, a1, a2, n, value, env): get_location(a0) end,
+  "get_or": fn(a0, a1, a2, n, value, env): if (n >= 3): get_or(a0, a1, a2) elif (n == 2): get_or(a0, a1) else: get_or(a0) end,
+  "get_path": fn(a0, a1, a2, n, value, env): if (n >= 2): get_path(a0, a1) else: get_path(a0) end,
+  "get_title": fn(a0, a1, a2, n, value, env): get_title(a0) end,
+  "get_url": fn(a0, a1, a2, n, value, env): get_url(a0) end,
+  "glob_match": fn(a0, a1, a2, n, value, env): if (n >= 2): glob_match(a0, a1) else: glob_match(a0) end,
+  "gmtime": fn(a0, a1, a2, n, value, env): gmtime(a0) end,
+  "grapheme_len": fn(a0, a1, a2, n, value, env): grapheme_len(a0) end,
+  "graphemes": fn(a0, a1, a2, n, value, env): graphemes(a0) end,
+  "gt": fn(a0, a1, a2, n, value, env): if (n >= 2): gt(a0, a1) else: gt(a0) end,
+  "gte": fn(a0, a1, a2, n, value, env): if (n >= 2): gte(a0, a1) else: gte(a0) end,
+  "has": fn(a0, a1, a2, n, value, env): if (n >= 2): has(a0, a1) else: has(a0) end,
+  "hexdump": fn(a0, a1, a2, n, value, env): hexdump(a0) end,
+  "histogram": fn(a0, a1, a2, n, value, env): if (n >= 2): histogram(a0, a1) else: histogram(a0) end,
+  "html_escape": fn(a0, a1, a2, n, value, env): html_escape(a0) end,
+  "html_unescape": fn(a0, a1, a2, n, value, env): html_unescape(a0) end,
+  "human_bytes": fn(a0, a1, a2, n, value, env): human_bytes(a0) end,
+  "human_size": fn(a0, a1, a2, n, value, env): human_size(a0) end,
+  "hypot": fn(a0, a1, a2, n, value, env): if (n >= 2): hypot(a0, a1) else: hypot(a0) end,
+  "identity": fn(a0, a1, a2, n, value, env): identity(a0) end,
+  "implode": fn(a0, a1, a2, n, value, env): implode(a0) end,
+  "increase_header_depth": fn(a0, a1, a2, n, value, env): increase_header_depth(a0) end,
+  "indent": fn(a0, a1, a2, n, value, env): if (n >= 2): indent(a0, a1) else: indent(a0) end,
+  "index": fn(a0, a1, a2, n, value, env): if (n >= 2): index(a0, a1) else: index(a0) end,
+  "index_by": fn(a0, a1, a2, n, value, env): if (n >= 2): index_by(a0, _hf(a1, env, 1)) else: index_by(a0) end,
+  "indices": fn(a0, a1, a2, n, value, env): if (n >= 2): indices(a0, a1) else: indices(a0) end,
+  "infinite": fn(a0, a1, a2, n, value, env): infinite() end,
+  "insert": fn(a0, a1, a2, n, value, env): if (n >= 3): insert(a0, a1, a2) elif (n == 2): insert(a0, a1) else: insert(a0) end,
+  "inspect": fn(a0, a1, a2, n, value, env): inspect(a0) end,
+  "interleave": fn(a0, a1, a2, n, value, env): if (n >= 2): interleave(a0, a1) else: interleave(a0) end,
+  "intern": fn(a0, a1, a2, n, value, env): intern(a0) end,
+  "interpose": fn(a0, a1, a2, n, value, env): if (n >= 2): interpose(a0, a1) else: interpose(a0) end,
+  "intersection": fn(a0, a1, a2, n, value, env): if (n >= 2): intersection(a0, a1) else: intersection(a0) end,
+  "invert": fn(a0, a1, a2, n, value, env): invert(a0) end,
+  "is_alnum": fn(a0, a1, a2, n, value, env): is_alnum(a0) end,
+  "is_alpha": fn(a0, a1, a2, n, value, env): is_alpha(a0) end,
+  "is_ascii": fn(a0, a1, a2, n, value, env): is_ascii(a0) end,
+  "is_blank": fn(a0, a1, a2, n, value, env): is_blank(a0) end,
+  "is_bytes": fn(a0, a1, a2, n, value, env): is_bytes(a0) end,
+  "is_callout": fn(a0, a1, a2, n, value, env): is_callout(a0) end,
+  "is_digit": fn(a0, a1, a2, n, value, env): is_digit(a0) end,
+  "is_em": fn(a0, a1, a2, n, value, env): is_em(a0) end,
+  "is_h_level": fn(a0, a1, a2, n, value, env): if (n >= 2): is_h_level(a0, a1) else: is_h_level(a0) end,
+  "is_integer": fn(a0, a1, a2, n, value, env): is_integer(a0) end,
+  "is_lower": fn(a0, a1, a2, n, value, env): is_lower(a0) end,
+  "is_markdown": fn(a0, a1, a2, n, value, env): is_markdown(a0) end,
+  "is_mdx": fn(a0, a1, a2, n, value, env): is_mdx(a0) end,
+  "is_mdx_flow_expression": fn(a0, a1, a2, n, value, env): is_mdx_flow_expression(a0) end,
+  "is_mdx_js_esm": fn(a0, a1, a2, n, value, env): is_mdx_js_esm(a0) end,
+  "is_mdx_jsx_flow_element": fn(a0, a1, a2, n, value, env): is_mdx_jsx_flow_element(a0) end,
+  "is_mdx_jsx_text_element": fn(a0, a1, a2, n, value, env): is_mdx_jsx_text_element(a0) end,
+  "is_mdx_text_expression": fn(a0, a1, a2, n, value, env): is_mdx_text_expression(a0) end,
+  "is_nan": fn(a0, a1, a2, n, value, env): is_nan(a0) end,
+  "is_not_regex_match": fn(a0, a1, a2, n, value, env): if (n >= 2): is_not_regex_match(a0, a1) else: is_not_regex_match(a0) end,
+  "is_regex_match": fn(a0, a1, a2, n, value, env): if (n >= 2): is_regex_match(a0, a1) else: is_regex_match(a0) end,
+  "is_space": fn(a0, a1, a2, n, value, env): is_space(a0) end,
+  "is_text": fn(a0, a1, a2, n, value, env): is_text(a0) end,
+  "is_toml": fn(a0, a1, a2, n, value, env): is_toml(a0) end,
+  "is_upper": fn(a0, a1, a2, n, value, env): is_upper(a0) end,
+  "is_yaml": fn(a0, a1, a2, n, value, env): is_yaml(a0) end,
+  "lcm": fn(a0, a1, a2, n, value, env): if (n >= 2): lcm(a0, a1) else: lcm(a0) end,
+  "leaf_entries": fn(a0, a1, a2, n, value, env): leaf_entries(a0) end,
+  "lines": fn(a0, a1, a2, n, value, env): lines(a0) end,
+  "ln": fn(a0, a1, a2, n, value, env): ln(a0) end,
+  "localtime": fn(a0, a1, a2, n, value, env): localtime(a0) end,
+  "log10": fn(a0, a1, a2, n, value, env): log10(a0) end,
+  "log2": fn(a0, a1, a2, n, value, env): log2(a0) end,
+  "lpad": fn(a0, a1, a2, n, value, env): if (n >= 3): lpad(a0, a1, a2) elif (n == 2): lpad(a0, a1) else: lpad(a0) end,
+  "lt": fn(a0, a1, a2, n, value, env): if (n >= 2): lt(a0, a1) else: lt(a0) end,
+  "lte": fn(a0, a1, a2, n, value, env): if (n >= 2): lte(a0, a1) else: lte(a0) end,
+  "ltrimstr": fn(a0, a1, a2, n, value, env): if (n >= 2): ltrimstr(a0, a1) else: ltrimstr(a0) end,
+  "map_values": fn(a0, a1, a2, n, value, env): if (n >= 2): map_values(a0, _hf(a1, env, 1)) else: map_values(a0) end,
+  "map_while": fn(a0, a1, a2, n, value, env): if (n >= 2): map_while(a0, _hf(a1, env, 1)) else: map_while(a0) end,
+  "markdown_escape": fn(a0, a1, a2, n, value, env): if (n >= 2): markdown_escape(a0, a1) else: markdown_escape(a0) end,
+  "markdowns": fn(a0, a1, a2, n, value, env): markdowns(a0) end,
+  "max_by": fn(a0, a1, a2, n, value, env): if (n >= 2): max_by(a0, _hf(a1, env, 1)) else: max_by(a0) end,
+  "md5": fn(a0, a1, a2, n, value, env): md5(a0) end,
+  "mean": fn(a0, a1, a2, n, value, env): mean(a0) end,
+  "median": fn(a0, a1, a2, n, value, env): median(a0) end,
+  "merge_defaults": fn(a0, a1, a2, n, value, env): if (n >= 2): merge_defaults(a0, a1) else: merge_defaults(a0) end,
+  "merge_with": fn(a0, a1, a2, n, value, env): if (n >= 3): merge_with(a0, a1, _hf(a2, env, 1)) elif (n == 2): merge_with(a0, a1) else: merge_with(a0) end,
+  "min_by": fn(a0, a1, a2, n, value, env): if (n >= 2): min_by(a0, _hf(a1, env, 1)) else: min_by(a0) end,
+  "mktime": fn(a0, a1, a2, n, value, env): mktime(a0) end,
+  "mod": fn(a0, a1, a2, n, value, env): if (n >= 2): mod(a0, a1) else: mod(a0) end,
+  "mode": fn(a0, a1, a2, n, value, env): mode(a0) end,
+  "mul": fn(a0, a1, a2, n, value, env): if (n >= 2): mul(a0, a1) else: mul(a0) end,
+  "nan": fn(a0, a1, a2, n, value, env): nan() end,
+  "ne": fn(a0, a1, a2, n, value, env): if (n >= 2): ne(a0, a1) else: ne(a0) end,
+  "negate": fn(a0, a1, a2, n, value, env): negate(a0) end,
+  "ngram": fn(a0, a1, a2, n, value, env): if (n >= 2): ngram(a0, a1) else: ngram(a0) end,
+  "nones": fn(a0, a1, a2, n, value, env): nones(a0) end,
+  "normalize_newlines": fn(a0, a1, a2, n, value, env): if (n >= 2): normalize_newlines(a0, a1) else: normalize_newlines(a0) end,
+  "not": fn(a0, a1, a2, n, value, env): not(a0) end,
+  "now": fn(a0, a1, a2, n, value, env): now() end,
+  "numbers": fn(a0, a1, a2, n, value, env): numbers(a0) end,
+  "omit": fn(a0, a1, a2, n, value, env): if (n >= 2): omit(a0, a1) else: omit(a0) end,
+  "or": fn(a0, a1, a2, n, value, env): if (n >= 2): or(a0, a1) else: or(a0) end,
+  "pack": fn(a0, a1, a2, n, value, env): if (n >= 2): pack(a0, a1) else: pack(a0) end,
+  "partition": fn(a0, a1, a2, n, value, env): if (n >= 2): partition(a0, _hf(a1, env, 1)) else: partition(a0) end,
+  "path_join": fn(a0, a1, a2, n, value, env): if (n >= 2): path_join(a0, a1) else: path_join(a0) end,
+  "paths": fn(a0, a1, a2, n, value, env): paths(a0) end,
+  "percentile": fn(a0, a1, a2, n, value, env): if (n >= 2): percentile(a0, a1) else: percentile(a0) end,
+  "pick": fn(a0, a1, a2, n, value, env): if (n >= 2): pick(a0, a1) else: pick(a0) end,
+  "pluck": fn(a0, a1, a2, n, value, env): if (n >= 2): pluck(a0, a1) else: pluck(a0) end,
+  "print": fn(a0, a1, a2, n, value, env): print(a0) end,
+  "product": fn(a0, a1, a2, n, value, env): product(a0) end,
+  "promote_heading": fn(a0, a1, a2, n, value, env): promote_heading(a0) end,
+  "rand": fn(a0, a1, a2, n, value, env): if (n >= 1): rand(a0) else: rand() end,
+  "rand_int": fn(a0, a1, a2, n, value, env): if (n >= 3): rand_int(a0, a1, a2) elif (n == 2): rand_int(a0, a1) else: rand_int(a0) end,
+  "random_string": fn(a0, a1, a2, n, value, env): if (n >= 3): random_string(a0, a1, a2) elif (n == 2): random_string(a0, a1) else: random_string(a0) end,
+  "redact": fn(a0, a1, a2, n, value, env): if (n >= 2): redact(a0, a1) else: redact(a0) end,
+  "regex_escape": fn(a0, a1, a2, n, value, env): regex_escape(a0) end,
+  "regex_replace": fn(a0, a1, a2, n, value, env): if (n >= 3): regex_replace(a0, a1, _hf(a2, env, 1)) elif (n == 2): regex_replace(a0, a1) else: regex_replace(a0) end,
+  "reject": fn(a0, a1, a2, n, value, env): if (n >= 2): reject(a0, _hf(a1, env, 1)) else: reject(a0) end,
+  "remove_chars": fn(a0, a1, a2, n, value, env): if (n >= 2): remove_chars(a0, a1) else: remove_chars(a0) end,
+  "repeat": fn(a0, a1, a2, n, value, env): if (n >= 2): repeat(a0, a1) else: repeat(a0) end,
+  "replace_prose": fn(a0, a1, a2, n, value, env): if (n >= 3): replace_prose(a0, a1, a2) elif (n == 2): replace_prose(a0, a1) else: replace_prose(a0) end,
+  "rindex": fn(a0, a1, a2, n, value, env): if (n >= 2): rindex(a0, a1) else: rindex(a0) end,
+  "rpad": fn(a0, a1, a2, n, value, env): if (n >= 3): rpad(a0, a1, a2) elif (n == 2): rpad(a0, a1) else: rpad(a0) end,
+  "rsplit_once": fn(a0, a1, a2, n, value, env): if (n >= 2): rsplit_once(a0, a1) else: rsplit_once(a0) end,
+  "rtrimstr": fn(a0, a1, a2, n, value, env): if (n >= 2): rtrimstr(a0, a1) else: rtrimstr(a0) end,
+  "safe_filename": fn(a0, a1, a2, n, value, env): if (n >= 2): safe_filename(a0, a1) else: safe_filename(a0) end,
+  "sample": fn(a0, a1, a2, n, value, env): if (n >= 3): sample(a0, a1, a2) elif (n == 2): sample(a0, a1) else: sample(a0) end,
+  "sanitize_html": fn(a0, a1, a2, n, value, env): sanitize_html(a0) end,
+  "scalars": fn(a0, a1, a2, n, value, env): scalars(a0) end,
+  "scan": fn(a0, a1, a2, n, value, env): if (n >= 2): scan(a0, a1) else: scan(a0) end,
+  "second": fn(a0, a1, a2, n, value, env): second(a0) end,
+  "set_check": fn(a0, a1, a2, n, value, env): if (n >= 2): set_check(a0, a1) else: set_check(a0) end,
+  "set_children": fn(a0, a1, a2, n, value, env): if (n >= 2): set_children(a0, a1) else: set_children(a0) end,
+  "set_code_block_lang": fn(a0, a1, a2, n, value, env): if (n >= 2): set_code_block_lang(a0, a1) else: set_code_block_lang(a0) end,
+  "set_list_ordered": fn(a0, a1, a2, n, value, env): if (n >= 2): set_list_ordered(a0, a1) else: set_list_ordered(a0) end,
+  "set_path": fn(a0, a1, a2, n, value, env): if (n >= 3): set_path(a0, a1, a2) elif (n == 2): set_path(a0, a1) else: set_path(a0) end,
+  "set_ref": fn(a0, a1, a2, n, value, env): if (n >= 2): set_ref(a0, a1) else: set_ref(a0) end,
+  "sha256": fn(a0, a1, a2, n, value, env): sha256(a0) end,
+  "sha512": fn(a0, a1, a2, n, value, env): sha512(a0) end,
+  "shell_quote": fn(a0, a1, a2, n, value, env): shell_quote(a0) end,
+  "shift_left": fn(a0, a1, a2, n, value, env): if (n >= 2): shift_left(a0, a1) else: shift_left(a0) end,
+  "shift_right": fn(a0, a1, a2, n, value, env): if (n >= 2): shift_right(a0, a1) else: shift_right(a0) end,
+  "shuffle": fn(a0, a1, a2, n, value, env): if (n >= 2): shuffle(a0, a1) else: shuffle(a0) end,
+  "sin": fn(a0, a1, a2, n, value, env): sin(a0) end,
+  "sinh": fn(a0, a1, a2, n, value, env): sinh(a0) end,
+  "slice": fn(a0, a1, a2, n, value, env): if (n >= 3): slice(a0, a1, a2) elif (n == 2): slice(a0, a1) else: slice(a0) end,
+  "slugify": fn(a0, a1, a2, n, value, env): if (n >= 2): slugify(a0, a1) else: slugify(a0) end,
+  "sort_natural": fn(a0, a1, a2, n, value, env): sort_natural(a0) end,
+  "split_once": fn(a0, a1, a2, n, value, env): if (n >= 2): split_once(a0, a1) else: split_once(a0) end,
+  "split_records": fn(a0, a1, a2, n, value, env): if (n >= 2): split_records(a0, a1) else: split_records(a0) end,
+  "squeeze_whitespace": fn(a0, a1, a2, n, value, env): squeeze_whitespace(a0) end,
+  "stats_by": fn(a0, a1, a2, n, value, env): if (n >= 4): error("Invalid number of arguments in \"stats_by\"") else: if (n >= 3): stats_by(a0, _hf(a1, env, 1), _hf(a2, env, 1)) elif (n == 2): stats_by(a0, _hf(a1, env, 1)) else: stats_by(a0) end,
+  "stddev": fn(a0, a1, a2, n, value, env): stddev(a0) end,
+  "stderr": fn(a0, a1, a2, n, value, env): stderr(a0) end,
+  "stem": fn(a0, a1, a2, n, value, env): stem(a0) end,
+  "strftime": fn(a0, a1, a2, n, value, env): if (n >= 2): strftime(a0, a1) else: strftime(a0) end,
+  "strings": fn(a0, a1, a2, n, value, env): strings(a0) end,
+  "strip_ansi": fn(a0, a1, a2, n, value, env): strip_ansi(a0) end,
+  "strip_tags": fn(a0, a1, a2, n, value, env): strip_tags(a0) end,
+  "strptime": fn(a0, a1, a2, n, value, env): if (n >= 2): strptime(a0, a1) else: strptime(a0) end,
+  "sub": fn(a0, a1, a2, n, value, env): if (n >= 2): sub(a0, a1) else: sub(a0) end,
+  "sum": fn(a0, a1, a2, n, value, env): sum(a0) end,
+  "sum_by": fn(a0, a1, a2, n, value, env): if (n >= 2): sum_by(a0, _hf(a1, env, 1)) else: sum_by(a0) end,
+  "tally": fn(a0, a1, a2, n, value, env): tally(a0) end,
+  "tan": fn(a0, a1, a2, n, value, env): tan(a0) end,
+  "tanh": fn(a0, a1, a2, n, value, env): tanh(a0) end,
+  "tap": fn(a0, a1, a2, n, value, env): if (n >= 2): tap(a0, _hf(a1, env, 1)) else: tap(a0) end,
+  "to_array": fn(a0, a1, a2, n, value, env): to_array(a0) end,
+  "to_boolean": fn(a0, a1, a2, n, value, env): to_boolean(a0) end,
+  "to_break": fn(a0, a1, a2, n, value, env): to_break() end,
+  "to_bytes": fn(a0, a1, a2, n, value, env): to_bytes(a0) end,
+  "to_callout": fn(a0, a1, a2, n, value, env): if (n >= 3): to_callout(a0, a1, a2) elif (n == 2): to_callout(a0, a1) else: to_callout(a0) end,
+  "to_date": fn(a0, a1, a2, n, value, env): if (n >= 2): to_date(a0, a1) else: to_date(a0) end,
+  "to_date_iso8601": fn(a0, a1, a2, n, value, env): to_date_iso8601(a0) end,
+  "to_definition": fn(a0, a1, a2, n, value, env): if (n >= 3): to_definition(a0, a1, a2) elif (n == 2): to_definition(a0, a1) else: to_definition(a0) end,
+  "to_footnote": fn(a0, a1, a2, n, value, env): if (n >= 2): to_footnote(a0, a1) else: to_footnote(a0) end,
+  "to_footnote_ref": fn(a0, a1, a2, n, value, env): to_footnote_ref(a0) end,
+  "to_hex": fn(a0, a1, a2, n, value, env): to_hex(a0) end,
+  "to_hr": fn(a0, a1, a2, n, value, env): to_hr() end,
+  "to_image": fn(a0, a1, a2, n, value, env): if (n >= 3): to_image(a0, a1, a2) elif (n == 2): to_image(a0, a1) else: to_image(a0) end,
+  "to_link": fn(a0, a1, a2, n, value, env): if (n >= 3): to_link(a0, a1, a2) elif (n == 2): to_link(a0, a1) else: to_link(a0) end,
+  "to_markdown": fn(a0, a1, a2, n, value, env): to_markdown(a0) end,
+  "to_markdown_string": fn(a0, a1, a2, n, value, env): to_markdown_string(a0) end,
+  "to_math": fn(a0, a1, a2, n, value, env): to_math(a0) end,
+  "to_math_inline": fn(a0, a1, a2, n, value, env): to_math_inline(a0) end,
+  "to_md_fragment": fn(a0, a1, a2, n, value, env): to_md_fragment(a0) end,
+  "to_md_html": fn(a0, a1, a2, n, value, env): to_md_html(a0) end,
+  "to_md_name": fn(a0, a1, a2, n, value, env): to_md_name(a0) end,
+  "to_md_table_align": fn(a0, a1, a2, n, value, env): to_md_table_align(a0) end,
+  "to_md_table_cell": fn(a0, a1, a2, n, value, env): if (n >= 3): to_md_table_cell(a0, a1, a2) elif (n == 2): to_md_table_cell(a0, a1) else: to_md_table_cell(a0) end,
+  "to_md_table_row": fn(a0, a1, a2, n, value, env): to_md_table_row(a0) end,
+  "to_mdx": fn(a0, a1, a2, n, value, env): to_mdx(a0) end,
+  "to_number_or": fn(a0, a1, a2, n, value, env): if (n >= 2): to_number_or(a0, a1) else: to_number_or(a0) end,
+  "token_compress": fn(a0, a1, a2, n, value, env): if (n >= 3): token_compress(a0, a1, a2) elif (n == 2): token_compress(a0, a1) else: token_compress(a0) end,
+  "token_count": fn(a0, a1, a2, n, value, env): if (n >= 2): token_count(a0, a1) else: token_count(a0) end,
+  "top_by": fn(a0, a1, a2, n, value, env): if (n >= 4): error("Invalid number of arguments in \"top_by\"") else: if (n >= 3): top_by(a0, _hf(a1, env, 1), a2) elif (n == 2): top_by(a0, _hf(a1, env, 1)) else: top_by(a0) end,
+  "translate": fn(a0, a1, a2, n, value, env): if (n >= 3): translate(a0, a1, a2) elif (n == 2): translate(a0, a1) else: translate(a0) end,
+  "transpose": fn(a0, a1, a2, n, value, env): transpose(a0) end,
+  "trunc": fn(a0, a1, a2, n, value, env): trunc(a0) end,
+  "truncate": fn(a0, a1, a2, n, value, env): if (n >= 3): truncate(a0, a1, a2) elif (n == 2): truncate(a0, a1) else: truncate(a0) end,
+  "type": fn(a0, a1, a2, n, value, env): type(a0) end,
+  "unicode_normalize": fn(a0, a1, a2, n, value, env): if (n >= 2): unicode_normalize(a0, a1) else: unicode_normalize(a0) end,
+  "union": fn(a0, a1, a2, n, value, env): if (n >= 2): union(a0, a1) else: union(a0) end,
+  "uniq": fn(a0, a1, a2, n, value, env): uniq(a0) end,
+  "unique_by": fn(a0, a1, a2, n, value, env): if (n >= 2): unique_by(a0, _hf(a1, env, 1)) else: unique_by(a0) end,
+  "unlines": fn(a0, a1, a2, n, value, env): unlines(a0) end,
+  "unpack": fn(a0, a1, a2, n, value, env): if (n >= 2): unpack(a0, a1) else: unpack(a0) end,
+  "unzip": fn(a0, a1, a2, n, value, env): unzip(a0) end,
+  "upcase": fn(a0, a1, a2, n, value, env): upcase(a0) end,
+  "update": fn(a0, a1, a2, n, value, env): if (n >= 2): update(a0, a1) else: update(a0) end,
+  "update_path": fn(a0, a1, a2, n, value, env): if (n >= 3): update_path(a0, a1, _hf(a2, env, 1)) elif (n == 2): update_path(a0, a1) else: update_path(a0) end,
+  "url_decode": fn(a0, a1, a2, n, value, env): url_decode(a0) end,
+  "url_encode": fn(a0, a1, a2, n, value, env): url_encode(a0) end,
+  "utf8": fn(a0, a1, a2, n, value, env): utf8(a0) end,
+  "utf8bytelen": fn(a0, a1, a2, n, value, env): utf8bytelen(a0) end,
+  "uuid": fn(a0, a1, a2, n, value, env): uuid() end,
+  "uuid_v4": fn(a0, a1, a2, n, value, env): uuid_v4() end,
+  "uuid_v7": fn(a0, a1, a2, n, value, env): uuid_v7() end,
+  "variance": fn(a0, a1, a2, n, value, env): variance(a0) end,
+  "walk": fn(a0, a1, a2, n, value, env): if (n >= 2): walk(a0, _hf(a1, env, 1)) else: walk(a0) end,
+  "with_entries": fn(a0, a1, a2, n, value, env): if (n >= 2): with_entries(a0, _hf(a1, env, 1)) else: with_entries(a0) end,
+  "word_wrap": fn(a0, a1, a2, n, value, env): if (n >= 2): word_wrap(a0, a1) else: word_wrap(a0) end,
+  "words": fn(a0, a1, a2, n, value, env): words(a0) end,
+  "xor": fn(a0, a1, a2, n, value, env): if (n >= 2): xor(a0, a1) else: xor(a0) end,
+  "zfill": fn(a0, a1, a2, n, value, env): if (n >= 2): zfill(a0, a1) else: zfill(a0) end,
+}
+| let _EXT_RECEIVER_ARITY = {
+  "accumulate": 3, "add": 2, "and": 2, "atan2": 2, "band": 2, "between": 3, "bor": 2, "bsearch": 2,
+  "capture": 2, "center": 2, "chunk_by": 2, "chunks": 2, "clamp": 3, "coalesce": 2,
+  "compact_map": 2, "convert": 2, "count_by": 2, "count_substr": 2, "css": 2, "css_attr": 3,
+  "css_text": 2, "date_add": 3, "date_diff": 3, "date_relative": 2, "decode": 2, "del_path": 2,
+  "del_paths": 2, "difference": 2, "div": 2, "encode": 2, "eq": 2, "fill": 2, "find": 2,
+  "find_index": 2, "flip": 3, "fold_while": 3, "frequencies_by": 2, "gcd": 2, "get_or": 3,
+  "get_path": 2, "glob_match": 2, "gt": 2, "gte": 2, "has": 2, "hypot": 2, "indent": 2, "index": 2,
+  "index_by": 2, "indices": 2, "insert": 3, "interleave": 2, "interpose": 2, "intersection": 2,
+  "is_h_level": 2, "is_not_regex_match": 2, "is_regex_match": 2, "lcm": 2, "lpad": 2, "lt": 2,
+  "lte": 2, "ltrimstr": 2, "map_values": 2, "map_while": 2, "markdown_escape": 2, "max_by": 2,
+  "merge_defaults": 2, "merge_with": 3, "min_by": 2, "mod": 2, "mul": 2, "ne": 2, "ngram": 2,
+  "normalize_newlines": 2, "omit": 2, "or": 2, "pack": 2, "partition": 2, "path_join": 2,
+  "percentile": 2, "pick": 2, "pluck": 2, "rand_int": 2, "random_string": 2, "redact": 2,
+  "regex_replace": 3, "reject": 2, "remove_chars": 2, "repeat": 2, "replace_prose": 3, "rindex": 2,
+  "rpad": 2, "rsplit_once": 2, "rtrimstr": 2, "sample": 2, "scan": 2, "set_check": 2,
+  "set_children": 2, "set_code_block_lang": 2, "set_list_ordered": 2, "set_path": 3, "set_ref": 2,
+  "shift_left": 2, "shift_right": 2, "slice": 3, "split_once": 2, "split_records": 2,
+  "stats_by": 3, "strftime": 2, "strptime": 2, "sub": 2, "sum_by": 2, "tap": 2, "to_callout": 3,
+  "to_date": 2, "to_definition": 3, "to_footnote": 2, "to_image": 3, "to_link": 3,
+  "to_md_table_cell": 3, "to_number_or": 2, "token_compress": 2, "top_by": 3, "translate": 3,
+  "truncate": 3, "unicode_normalize": 2, "union": 2, "unique_by": 2, "unpack": 2, "update": 2,
+  "update_path": 3, "walk": 2, "with_entries": 2, "word_wrap": 2, "xor": 2, "zfill": 2
 }
 |
 
@@ -510,8 +925,10 @@ let _BUILTINS = {
 # implementation that reports it as unknown.
 def _builtin_impl(name):
   let impl = _BUILTINS[name]
-  | if (impl == None): fn(a0, a1, a2, n, value, env): error("Unknown function: " + name) end
-    else: impl
+  | let ext_impl = if (impl == None): _EXT_BUILTINS[name] else: None
+  | if (impl != None): impl
+    elif (ext_impl != None): ext_impl
+    else: fn(a0, a1, a2, n, value, env): error("Unknown function: " + name) end
 end
 
 # Evaluate a built-in function call.
@@ -529,10 +946,22 @@ end
 # Params are {name, default} pairs; a missing trailing arg falls back to its
 # default expression (evaluated in the call env built up so far, so later
 # defaults may reference earlier params) or None if there is no default.
-def _call_user_fn(fn_val, args_vals, value, env):
+# Number of parameters without a default, counted once when the function is
+# compiled. A call with exactly one argument fewer gets the piped value as its
+# first argument, as in `10 | f()` for `def f(x): ...`.
+def _required_params(params):
+  len(filter(params, fn(p): p[:default] == None end))
+end
+
+def _call_user_fn(fn_val, supplied_args, value, env):
   let params = fn_val[:params]
   | let count = len(params)
+  | let args_vals = if (len(supplied_args) < count && fn_val[:req] == len(supplied_args) + 1): [value] + supplied_args
+    else: supplied_args
   | let arg_count = len(args_vals)
+  | if (arg_count > count || (fn_val[:req] != None && arg_count < fn_val[:req])):
+      error("Invalid number of arguments in \"" + (if (fn_val[:name] == None): "" else: fn_val[:name]) +
+        "\", expected " + to_string(count) + ", got " + to_string(arg_count))
   | if (count >= 8 && (arg_count >= count || (arg_count >= 64 && len(fn_val[:env]) >= 128))) do
         # Supplied arguments form a prefix, so bind them in one pass. Missing
         # arguments still use sequential set() calls: each default expression
@@ -655,6 +1084,26 @@ def _as_v(c):
     end
 end
 
+# The signal a break or continue leaves when no loop catches it.
+def _stray_signal(r):
+  let c = _ctrl(r)
+  | if (c == "continue"): error("continue outside a loop")
+    else: error("break outside a loop")
+end
+
+# Value-only code for a function body or parameter default. A break or continue
+# that escapes it has no loop to end, so it is an error as in mq.
+def _as_body(c):
+  if (c[0]): c[1]
+  else do
+      let run = c[1]
+      | fn(value, env):
+          let r = run(value, env)
+          | if (_ctrl(r) == "none"): r[:val] else: _stray_signal(r)
+        end
+    end
+end
+
 # {val, env} code for a compiled node.
 def _as_x(c):
   if (c[0]) do
@@ -668,12 +1117,51 @@ def _comp_const(v):
   [true, fn(value, env): v end]
 end
 
+# A built-in used as a value, e.g. `map(xs, len)` or `let f = to_string`: a
+# function value of up to three parameters that hands them to the built-in.
+let _BUILTIN_PARAMS = [{name: "a", default: None}, {name: "b", default: None}, {name: "c", default: None}]
+|
+
+def _builtin_value(name, env):
+  if (_BUILTINS[name] == None && _EXT_BUILTINS[name] == None): error("Unknown function: " + name)
+  else do
+    let impl = _builtin_impl(name)
+    | {kind: "fn", params: _BUILTIN_PARAMS, body: {kind: "builtin", name: name}, env: env,
+        dflt: [None, None, None], req: 1,
+        code: fn(value, call_env):
+          let a = call_env["a"]
+          | let b = call_env["b"]
+          | let c = call_env["c"]
+          | impl(a, b, c, if (c != None): 3 elif (b != None): 2 else: 1, value, call_env)
+        end}
+  end
+end
+
+# A name as a value: its binding, or a built-in as a function value.
 def _comp_ident(ast):
   let name = ast[:name]
   | [true, fn(value, env):
       let v = env[name]
-      | if (v == None && !has(env, name)): _eval_builtin(name, [], value, env) else: v
+      | if (v == None && !has(env, name)): _builtin_value(name, env) else: v
     end]
+end
+
+# A name as a statement (pipe step, branch or body), where a function with at
+# most one required parameter is called, with the piped value as its argument.
+def _comp_ident_stmt(ast):
+  let name = ast[:name]
+  | [true, fn(value, env):
+      let v = env[name]
+      | if (v == None && !has(env, name)): _eval_builtin(name, [], value, env)
+        elif (is_dict(v) && v[:kind] == "fn" && (if (v[:req] == None): _required_params(v[:params]) else: v[:req]) <= 1):
+          _call_user_fn(v, [], value, env)
+        else: v
+    end]
+end
+
+# Compile a node in statement position.
+def _comp_stmt(ast):
+  if (ast[:kind] == "ident"): _comp_ident_stmt(ast) else: _comp(ast)
 end
 
 # ── calls ─────────────────────────────────────────────────────────────────────
@@ -682,7 +1170,7 @@ end
 # theirs; one assembled by hand from AST nodes is compiled on first use.
 def _body_code(fn_val):
   let run = fn_val[:code]
-  | if (run == None): _as_v(_comp(fn_val[:body])) else: run
+  | if (run == None): _as_body(_comp_stmt(fn_val[:body])) else: run
 end
 
 # Value-only code for the default expression of the i-th parameter.
@@ -704,7 +1192,7 @@ end
 
 def _compile_defaults(params):
   foreach (p, params):
-    if (p[:default] == None): None else: _as_v(_comp(p[:default]))
+    if (p[:default] == None): None else: _as_body(_comp(p[:default]))
   end
 end
 
@@ -731,7 +1219,8 @@ end
 # three arguments pass them straight to the implementation without building
 # an argument array.
 def _comp_call(ast):
-  let arity = _RECEIVER_ARITY[ast[:name]]
+  let named_arity = _RECEIVER_ARITY[ast[:name]]
+  | let arity = if (named_arity == None): _EXT_RECEIVER_ARITY[ast[:name]] else: named_arity
   | if (arity != None && len(ast[:args]) == arity - 1): _comp_receiver_call(ast)
     else: _comp_direct_call(ast)
 end
@@ -765,6 +1254,18 @@ def _comp_receiver_call(ast):
             else: impl(value, x, y, 3, value, env)
         end]
     end
+end
+
+# Call of a computed function value: `(fn(x): x + 1)(2)`, `fns[0](2)`.
+def _comp_apply(ast):
+  let fc = _as_v(_comp(ast[:callee]))
+  | let args = foreach (a, ast[:args]): _as_v(_comp(a)) end
+  | [true, fn(value, env):
+      let f = fc(value, env)
+      | if (is_dict(f) && has(f, "kind") && f[:kind] == "fn"):
+          _call_user_fn(f, foreach (a, args): a(value, env) end, value, env)
+        else: error("Value is not callable")
+    end]
 end
 
 def _comp_direct_call(ast):
@@ -918,13 +1419,15 @@ def _comp_bin(ast):
               | [false, fn(value, env):
                   let lr = lx(value, env)
                   | let lv = lr[:val]
-                  | if (op == "&&" && !lv): {val: false, env: lr[:env]}
+                  | if (_ctrl(lr) != "none"): lr
+                    elif (op == "&&" && !lv): {val: false, env: lr[:env]}
                     elif (op == "||" && lv): {val: lv, env: lr[:env]}
                     elif (op == "??" && lv != None): {val: lv, env: lr[:env]}
                     elif (rpure): {val: _eval_bin(op, lv, rrun(value, lr[:env])), env: lr[:env]}
                     else do
                         let rr = rrun(value, lr[:env])
-                        | {val: _eval_bin(op, lv, rr[:val]), env: rr[:env]}
+                        | if (_ctrl(rr) != "none"): rr
+                          else: {val: _eval_bin(op, lv, rr[:val]), env: rr[:env]}
                       end
                 end]
             end
@@ -975,8 +1478,9 @@ def _comp_bin_chain(first_ast, stage_asts):
             let first = fx(value, env)
             | var acc = first[:val]
             | var cur_env = first[:env]
+            | var signal = if (_ctrl(first) == "none"): None else: first
             | var i = 0
-            | while (i < n):
+            | while (i < n && signal == None):
                 let st = stages[i]
                 | let op = st[0]
                 | if (op == "&&" && !acc): acc = false
@@ -988,12 +1492,15 @@ def _comp_bin_chain(first_ast, stage_asts):
                     end
                   else do
                       let rr = st[3](value, cur_env)
-                      | acc = _eval_bin(op, acc, rr[:val])
-                      | cur_env = rr[:env]
+                      | if (_ctrl(rr) != "none"): signal = rr
+                        else do
+                          acc = _eval_bin(op, acc, rr[:val])
+                          | cur_env = rr[:env]
+                        end
                     end
                 | i += 1
               end
-            | {val: acc, env: cur_env}
+            | if (signal != None): signal else: {val: acc, env: cur_env}
           end]
       end
 end
@@ -1195,14 +1702,14 @@ end
 
 def _comp_if(ast):
   let cond = _as_v(_comp(ast[:cond]))
-  | let tc = _comp(ast[:then])
+  | let tc = _comp_stmt(ast[:then])
   | let elifs = if (ast[:elifs] == None): [] else: ast[:elifs]
   | let ne = len(elifs)
-  | let ac = if (ast[:else_br] == None): None else: _comp(ast[:else_br])
+  | let ac = if (ast[:else_br] == None): None else: _comp_stmt(ast[:else_br])
   | var pure = tc[0] && (ac == None || ac[0])
   | let conds = foreach (e, elifs): _as_v(_comp(e[:cond])) end
   | let ecs = foreach (e, elifs):
-      let c = _comp(e[:body])
+      let c = _comp_stmt(e[:body])
       | if (!c[0]): pure = false
       | c
     end
@@ -1244,7 +1751,7 @@ end
 # unless (cond): body -- runs body only when cond is false, else yields None.
 def _comp_unless(ast):
   let cond = _as_v(_comp(ast[:cond]))
-  | let bc = _comp(ast[:body])
+  | let bc = _comp_stmt(ast[:body])
   | let b = bc[1]
   | if (bc[0]): [true, fn(value, env): if (!cond(value, env)): b(value, env) else: None end]
     else: [false, fn(value, env): if (!cond(value, env)): b(value, env) else: {val: None, env: env} end]
@@ -1281,7 +1788,7 @@ def _comp_pipe(ast):
   | let cs = foreach (s, _pipe_stage_asts(ast)):
       if (s[:kind] == "dot" || s[:kind] == "self"): continue
       else do
-          let c = _comp(s)
+          let c = _comp_stmt(s)
           | if (!c[0]): all_pure = false
           | c
         end
@@ -1341,7 +1848,8 @@ end
 
 # ── bindings ──────────────────────────────────────────────────────────────────
 
-# `let` and `var` both bind the value of their expression.
+# `let` and `var` both bind the value of their expression. Like every binding,
+# they leave the piped value unchanged.
 def _comp_let(ast):
   let name = ast[:name]
   | let vc = _comp(ast[:val])
@@ -1349,12 +1857,13 @@ def _comp_let(ast):
   | if (vc[0]):
       [false, fn(value, env):
         let v = run(value, env)
-        | {val: v, env: set(env, name, v)}
+        | {val: value, env: set(env, name, v)}
       end]
     else:
       [false, fn(value, env):
         let vr = run(value, env)
-        | {val: vr[:val], env: set(vr[:env], name, vr[:val])}
+        | if (_ctrl(vr) != "none"): vr
+          else: {val: value, env: set(vr[:env], name, vr[:val])}
       end]
 end
 
@@ -1363,7 +1872,8 @@ def _comp_destructure(ast):
   | let vx = _as_x(_comp(ast[:val]))
   | [false, fn(value, env):
       let vr = vx(value, env)
-      | {val: vr[:val], env: _bind_pattern(pattern, vr[:val], vr[:env])}
+      | if (_ctrl(vr) != "none"): vr
+        else: {val: value, env: _bind_pattern(pattern, vr[:val], vr[:env])}
     end]
 end
 
@@ -1386,13 +1896,16 @@ def _comp_assign(ast):
   | if (vc[0]):
       [false, fn(value, env):
         let nv = _assign_value(op, env[name], run(value, env))
-        | {val: nv, env: set(env, name, nv)}
+        | {val: value, env: set(env, name, nv)}
       end]
     else:
       [false, fn(value, env):
         let vr = run(value, env)
-        | let nv = _assign_value(op, env[name], vr[:val])
-        | {val: nv, env: set(vr[:env], name, nv)}
+        | if (_ctrl(vr) != "none"): vr
+          else do
+            let nv = _assign_value(op, env[name], vr[:val])
+            | {val: value, env: set(vr[:env], name, nv)}
+          end
       end]
 end
 
@@ -1401,10 +1914,11 @@ end
 def _comp_fn(ast):
   let params = ast[:params]
   | let body = ast[:body]
-  | let run = _as_v(_comp(body))
+  | let run = _as_body(_comp_stmt(body))
   | let dflt = _compile_defaults(params)
+  | let req = _required_params(params)
   | [true, fn(value, env):
-      {kind: "fn", params: params, body: body, env: env, code: run, dflt: dflt}
+      {kind: "fn", params: params, body: body, env: env, code: run, dflt: dflt, req: req}
     end]
 end
 
@@ -1412,11 +1926,12 @@ def _comp_def(ast):
   let name = ast[:name]
   | let params = ast[:params]
   | let body = ast[:body]
-  | let run = _as_v(_comp(body))
+  | let run = _as_body(_comp_stmt(body))
   | let dflt = _compile_defaults(params)
+  | let req = _required_params(params)
   | [false, fn(value, env):
-      let fn_val = {kind: "fn", name: name, params: params, body: body, env: env, code: run, dflt: dflt}
-      | {val: fn_val, env: set(env, name, fn_val)}
+      let fn_val = {kind: "fn", name: name, params: params, body: body, env: env, code: run, dflt: dflt, req: req}
+      | {val: value, env: set(env, name, fn_val)}
     end]
 end
 
@@ -1430,7 +1945,7 @@ end
 # already-large environment.
 def _comp_module(ast):
   let name = ast[:name]
-  | let bx = _as_x(_comp(ast[:body]))
+  | let bx = _as_x(_comp_stmt(ast[:body]))
   | [false, fn(value, env):
       let orig_len = len(keys(env))
       | let inner = bx(value, env)
@@ -1442,15 +1957,17 @@ def _comp_module(ast):
           new_env = set(new_env, name + "::" + new_keys[i], inner[:env][new_keys[i]])
           | i += 1
         end
-      | {val: None, env: new_env}
+      | {val: value, env: new_env}
     end]
 end
 
 # ── control flow ──────────────────────────────────────────────────────────────
 
+# `break` without a value leaves its loop with the results gathered so far
+# (signal "break_bare"); `break: expr` leaves it with expr's value ("break").
 def _comp_break(ast):
   if (ast[:val] == None):
-    [false, fn(value, env): {val: value, env: env, ctrl: "break"} end]
+    [false, fn(value, env): {val: value, env: env, ctrl: "break_bare"} end]
   else do
       let vx = _as_x(_comp(ast[:val]))
       | [false, fn(value, env):
@@ -1461,8 +1978,8 @@ def _comp_break(ast):
 end
 
 def _comp_try(ast):
-  let bc = _comp(ast[:body])
-  | let cc = _comp(ast[:catch_body])
+  let bc = _comp_stmt(ast[:body])
+  | let cc = _comp_stmt(ast[:catch_body])
   | let catch_var = ast[:catch_var]
   | if (bc[0] && cc[0] && catch_var == None) do
         let b = bc[1]
@@ -1508,41 +2025,96 @@ def _comp_trysuppress(ast):
 end
 
 # `until` stops when its condition becomes true; `while` stops when it
-# becomes false. Continue keeps the previous value but retains new bindings.
+# becomes false; `loop` never stops by itself. Each iteration receives the
+# previous iteration's value. The loop's value is that of the last completed
+# iteration, None if there was none. Continue keeps the previous value but
+# retains new bindings. A plain `break` leaves the previous iteration's value
+# for `while` / `until`, but the value reaching the `break` for `loop`.
 def _comp_cond_loop(ast, stop_when_true):
-  let cond = _as_v(_comp(ast[:cond]))
-  | let bc = _comp(ast[:body])
+  let is_loop = ast[:kind] == "loop"
+  | if (!is_loop && _signals(ast[:cond])): _comp_cond_loop_signalling_cond(ast, stop_when_true)
+    else: _comp_cond_loop_plain(ast, stop_when_true)
+end
+
+# `while (if (c): break else: ...)`: the signal of the condition belongs to the
+# enclosing loop, so this loop ends with it as its own result.
+def _comp_cond_loop_signalling_cond(ast, stop_when_true):
+  let condx = _as_x(_comp(ast[:cond]))
+  | let bx = _as_x(_comp_stmt(_prepare(ast[:body])))
+  | [false, fn(value, env):
+      var cur_env = env
+      | var cur_val = value
+      | var out = None
+      | var signal = None
+      | var running = true
+      | while (running):
+          let cr = condx(cur_val, cur_env)
+          | if (_ctrl(cr) != "none") do
+                signal = cr
+                | running = false
+              end
+            elif (cr[:val] == stop_when_true): running = false
+            else do
+              let br = bx(cur_val, cur_env)
+              | let c = _ctrl(br)
+              | cur_env = br[:env]
+              | if (c == "break") do
+                    out = br[:val]
+                    | running = false
+                  end
+                elif (c == "break_bare"): running = false
+                elif (c != "continue") do
+                    cur_val = br[:val]
+                    | out = cur_val
+                  end
+            end
+        end
+      | if (signal != None): signal else: {val: out, env: cur_env}
+    end]
+end
+
+def _comp_cond_loop_plain(ast, stop_when_true):
+  let is_loop = ast[:kind] == "loop"
+  | let cond = if (is_loop): fn(value, env): true end else: _as_body(_comp(ast[:cond]))
+  | let bc = _comp_stmt(_prepare(ast[:body]))
   | let body = bc[1]
   | if (bc[0]):
       # A pure body can neither bind nor signal, so only the value advances.
       [false, fn(value, env):
         var cur_val = value
+        | var out = if (is_loop): value else: None
         | var running = cond(cur_val, env) != stop_when_true
         | while (running):
             cur_val = body(cur_val, env)
+            | out = cur_val
             | running = cond(cur_val, env) != stop_when_true
           end
-        | {val: cur_val, env: env}
+        | {val: out, env: env}
       end]
     else:
       [false, fn(value, env):
         var cur_env = env
         | var cur_val = value
+        | var out = if (is_loop): value else: None
         | var running = cond(cur_val, cur_env) != stop_when_true
         | while (running):
             let br = body(cur_val, cur_env)
             | let c = _ctrl(br)
             | cur_env = br[:env]
             | if (c == "break") do
-                  cur_val = br[:val]
+                  out = br[:val]
                   | running = false
                 end
+              elif (c == "break_bare"): running = false
               else do
-                  if (c != "continue"): cur_val = br[:val]
+                  if (c != "continue") do
+                      cur_val = br[:val]
+                      | out = cur_val
+                    end
                   | running = cond(cur_val, cur_env) != stop_when_true
                 end
           end
-        | {val: cur_val, env: cur_env}
+        | {val: out, env: cur_env}
       end]
 end
 
@@ -1599,6 +2171,8 @@ def _foreach_env(iter_var, iter_val, run, env):
             | broke = true
             | break
           end
+        elif (signal == "break_bare"):
+          break
         elif (signal == "continue"):
           continue
         else:
@@ -1610,10 +2184,10 @@ end
 
 def _comp_foreach(ast):
   let iter_var = ast[:iter_var]
-  | let body = ast[:body]
+  | let body = _prepare(ast[:body])
   | let body_kind = body[:kind]
-  | let ic = _as_v(_comp(ast[:iter]))
-  | let bc = _comp(body)
+  | let ic = _as_body(_comp(ast[:iter]))
+  | let bc = _comp_stmt(body)
   | let run = bc[1]
   | let bpure = bc[0]
   # An identity body can reuse the input array. A bound None is excluded from
@@ -1646,13 +2220,15 @@ def _comp_match(ast):
       let pattern = arm[:pattern]
       | let literal = if (pattern[:kind] == "litpat"): pattern[:val] else: None
       | let literal_kind = if (literal == None): None else: literal[:kind]
+      | let guard_signals = arm[:guard] != None && _signals(arm[:guard])
       | let direct = literal_kind == "num" || literal_kind == "str" || literal_kind == "bool" || literal_kind == "none"
       | {
           pattern: pattern,
           direct: direct,
           literal: if (literal_kind == "none" || !direct): None else: literal[:val],
-          guard: if (arm[:guard] == None): None else: _as_v(_comp(arm[:guard])),
-          body: _as_x(_comp(arm[:body])),
+          guard: if (arm[:guard] == None || guard_signals): None else: _as_v(_comp(arm[:guard])),
+          gx: if (guard_signals): _as_x(_comp(arm[:guard])) else: None,
+          body: _as_x(_comp_stmt(arm[:body])),
         }
     end
   | let n = len(arms)
@@ -1662,10 +2238,20 @@ def _comp_match(ast):
       | let match_env = vr[:env]
       | var i = 0
       | var result = None
-      | while (i < n && result == None):
+      | var signal = None
+      | while (i < n && result == None && signal == None):
           let arm = arms[i]
           | let guard = arm[:guard]
-          | if (arm[:direct]) do
+          | if (arm[:gx] != None) do
+                # A guard that can signal leaves the match with the signal.
+                let mr = _match_pattern(arm[:pattern], matchval, match_env)
+                | if (mr[:matched]) do
+                      let gr = arm[:gx](value, mr[:env])
+                      | if (_ctrl(gr) != "none"): signal = gr
+                        elif (gr[:val]): result = arm[:body](value, mr[:env])
+                    end
+              end
+            elif (arm[:direct]) do
                 if (matchval == arm[:literal] && (guard == None || guard(value, match_env))):
                   result = arm[:body](value, match_env)
               end
@@ -1676,7 +2262,301 @@ def _comp_match(ast):
               end
           | i += 1
         end
-      | if (result == None): error("No match arm matched") else: result
+      | if (signal != None): signal
+        elif (result == None): error("No match arm matched")
+        else: result
+    end]
+end
+
+# ── break / continue inside an operand ───────────────────────────────────────
+#
+# A signal raised in the middle of an expression, as in `[if (c): break else:
+# x, 9]` or `len(if (c): continue else: x)`, must reach the enclosing loop. Only
+# statement positions (pipe stages, branches, `do` / `try` bodies) pass a signal
+# on, so before compiling, a program that contains `break` or `continue` is
+# rewritten: an operand that can signal is evaluated first into a temporary and
+# the operator is applied to the temporary. A `hoist` node performs that
+# evaluation and returns the signal as soon as one is raised.
+
+def _is_signal_kind(k):
+  k == "break" || k == "continue"
+end
+
+# True when the AST holds a break or continue anywhere.
+def _has_ctrl(x):
+  if (is_array(x)) do
+      var found = false
+      | var i = 0
+      | let n = len(x)
+      | while (!found && i < n):
+          found = _has_ctrl(x[i])
+          | i += 1
+        end
+      | found
+    end
+  elif (is_dict(x)) do
+      let k = x[:kind]
+      | if (k == "break" || k == "continue"): true
+        else do
+          let vs = values(x)
+          | var found = false
+          | var i = 0
+          | let n = len(vs)
+          | while (!found && i < n):
+              found = _has_ctrl(vs[i])
+              | i += 1
+            end
+          | found
+        end
+    end
+  else: false
+end
+
+# True when evaluating the node can return a break or continue signal.
+def _signals(n):
+  let k = n[:kind]
+  | if (k == "break" || k == "continue" || k == "hoist"): true
+    elif (k == "pipe"): len(filter(n[:stages], fn(c): _signals(c) end)) > 0
+    elif (k == "if") do
+        _signals(n[:then]) || (n[:else_br] != None && _signals(n[:else_br])) ||
+          len(filter(if (n[:elifs] == None): [] else: n[:elifs], fn(e): _signals(e[:body]) end)) > 0
+      end
+    elif (k == "bin"): _is_lazy_op(n[:op]) && _signals(n[:right])
+    elif (k == "bin_chain"):
+      len(filter(n[:stages], fn(st): _is_lazy_op(st[:op]) && _signals(st[:right]) end)) > 0
+    elif (k == "while" || k == "until"): _signals(n[:cond])
+    elif (k == "unless" || k == "do"): _signals(n[:body])
+    elif (k == "try"): _signals(n[:body]) || _signals(n[:catch_body])
+    elif (k == "match") do
+        len(filter(n[:arms], fn(a): _signals(a[:body]) || (a[:guard] != None && _signals(a[:guard])) end)) > 0
+      end
+    else: false
+end
+
+# Leaves read no state a sibling could change, so they never need hoisting.
+def _is_leaf_kind(k):
+  k == "num" || k == "str" || k == "bool" || k == "none" || k == "atom" ||
+    k == "ident" || k == "self" || k == "dot" || k == "nodes" || k == "sel"
+end
+
+def _hoist_name(depth, i):
+  "%h" + to_string(depth) + "_" + to_string(i)
+end
+
+# Operands evaluated in order. Everything up to the last one that can signal is
+# evaluated ahead of the operator, in its original order.
+# Returns {items: operands with temporaries in place, binds: [{name, expr}]}.
+def _hoist_items(items, depth):
+  var last = -1
+  | var i = 0
+  | foreach (item, items):
+      if (item != None && _signals(item)): last = i
+      | i += 1
+    end
+  | if (last < 0): {items: items, binds: []}
+    else do
+      var binds = []
+      | var idx = 0
+      | let out = foreach (item, items):
+          let at = idx
+          | idx += 1
+          | if (at > last || item == None || _is_leaf_kind(item[:kind])): item
+            else do
+              let name = _hoist_name(depth, at)
+              | binds += [{name: name, expr: item}]
+              | {kind: "ident", name: name}
+            end
+        end
+      | {items: out, binds: binds}
+    end
+end
+
+def _hoisted(binds, body):
+  if (len(binds) == 0): body else: {kind: "hoist", binds: binds, body: body}
+end
+
+def _is_lazy_op(op):
+  op == "&&" || op == "||" || op == "??"
+end
+
+# Rewrite one node whose children are already rewritten.
+def _lift_node(n, depth):
+  let k = n[:kind]
+  | if (k == "call") do
+      let h = _hoist_items(n[:args], depth)
+      | _hoisted(h[:binds], set(n, "args", h[:items]))
+    end
+    elif (k == "apply") do
+        let h = _hoist_items([n[:callee]] + n[:args], depth)
+        | var at = -1
+        | let args = foreach (a, h[:items]):
+            at += 1
+            | if (at == 0): continue else: a
+          end
+        | _hoisted(h[:binds], set(set(n, "callee", h[:items][0]), "args", args))
+      end
+    elif (k == "arr") do
+        let h = _hoist_items(n[:items], depth)
+        | _hoisted(h[:binds], set(n, "items", h[:items]))
+      end
+    elif (k == "dict") do
+        let h = _hoist_items(foreach (p, n[:pairs]): p[:val] end, depth)
+        | var at = -1
+        | let pairs = foreach (p, n[:pairs]):
+            at += 1
+            | set(p, "val", h[:items][at])
+          end
+        | _hoisted(h[:binds], set(n, "pairs", pairs))
+      end
+    elif (k == "bin") do
+        if (_is_lazy_op(n[:op])) do
+            let h = _hoist_items([n[:left]], depth)
+            | _hoisted(h[:binds], set(n, "left", h[:items][0]))
+          end
+        else do
+            let h = _hoist_items([n[:left], n[:right]], depth)
+            | _hoisted(h[:binds], set(set(n, "left", h[:items][0]), "right", h[:items][1]))
+          end
+      end
+    elif (k == "bin_chain") do
+        # Operands up to the first short-circuit operator, whose right side is lazy.
+        let total = len(n[:stages])
+        | var eager = total
+        | var j = 0
+        | foreach (st, n[:stages]):
+            if (eager == total && _is_lazy_op(st[:op])): eager = j
+            | j += 1
+          end
+        | var seen = 0
+        | let rights = foreach (st, n[:stages]):
+            seen += 1
+            | if (seen > eager): continue else: st[:right]
+          end
+        | let h = _hoist_items([n[:first]] + rights, depth)
+        | var at = 0
+        | let stages = foreach (st, n[:stages]):
+            at += 1
+            | if (at <= eager): set(st, "right", h[:items][at]) else: st
+          end
+        | _hoisted(h[:binds], set(set(n, "first", h[:items][0]), "stages", stages))
+      end
+    elif (k == "un") do
+        let h = _hoist_items([n[:expr]], depth)
+        | _hoisted(h[:binds], set(n, "expr", h[:items][0]))
+      end
+    elif (k == "idx") do
+        let h = _hoist_items([n[:base], n[:index]], depth)
+        | _hoisted(h[:binds], set(set(n, "base", h[:items][0]), "index", h[:items][1]))
+      end
+    elif (k == "dkey") do
+        let h = _hoist_items([n[:base]], depth)
+        | _hoisted(h[:binds], set(n, "base", h[:items][0]))
+      end
+    elif (k == "slice") do
+        let h = _hoist_items([n[:base], n[:from], n[:to]], depth)
+        | _hoisted(h[:binds], set(set(set(n, "base", h[:items][0]), "from", h[:items][1]), "to", h[:items][2]))
+      end
+    elif (k == "interp") do
+        let exprs = foreach (sg, n[:segs]):
+            if (sg[:kind] == "expr"): sg[:node] else: None
+          end
+        | let h = _hoist_items(exprs, depth)
+        | var at = -1
+        | let segs = foreach (sg, n[:segs]):
+            at += 1
+            | if (sg[:kind] == "expr"): set(sg, "node", h[:items][at]) else: sg
+          end
+        | _hoisted(h[:binds], set(n, "segs", segs))
+      end
+    elif (k == "let" || k == "var" || k == "assign" || k == "let_destructure" || k == "var_destructure" || k == "break") do
+        if (n[:val] == None): n
+        else do
+            let h = _hoist_items([n[:val]], depth)
+            | _hoisted(h[:binds], set(n, "val", h[:items][0]))
+          end
+      end
+    elif (k == "unless") do
+        let h = _hoist_items([n[:cond]], depth)
+        | _hoisted(h[:binds], set(n, "cond", h[:items][0]))
+      end
+    elif (k == "if") do
+        let elifs = if (n[:elifs] == None): [] else: n[:elifs]
+        | var split = -1
+        | var j = 0
+        | foreach (e, elifs):
+            if (split < 0 && _signals(e[:cond])): split = j
+            | j += 1
+          end
+        | if (split < 0) do
+              let h = _hoist_items([n[:cond]], depth)
+              | _hoisted(h[:binds], set(n, "cond", h[:items][0]))
+            end
+          else do
+              # `elif` conditions run only when the earlier ones fail, so the
+              # rest of the chain moves into the `else` of a nested `if`.
+              var at = -1
+              | let before = foreach (e, elifs):
+                  at += 1
+                  | if (at >= split): continue else: e
+                end
+              | at = -1
+              | let after = foreach (e, elifs):
+                  at += 1
+                  | if (at <= split): continue else: e
+                end
+              | let inner = _lift_node({kind: "if", cond: elifs[split][:cond], then: elifs[split][:body],
+                  elifs: after, else_br: n[:else_br]}, depth + 1)
+              | _lift_node({kind: "if", cond: n[:cond], then: n[:then], elifs: before, else_br: inner}, depth)
+            end
+      end
+    elif (k == "foreach") do
+        let h = _hoist_items([n[:iter]], depth)
+        | _hoisted(h[:binds], set(n, "iter", h[:items][0]))
+      end
+    elif (k == "match") do
+        let h = _hoist_items([n[:val]], depth)
+        | _hoisted(h[:binds], set(n, "val", h[:items][0]))
+      end
+    else: n
+end
+
+# Rewrite every node of the tree, children first. `depth` keeps temporaries of
+# nested rewrites apart.
+def _lift_tree(x, depth):
+  if (is_array(x)): map(x, fn(item): _lift_tree(item, depth + 1) end)
+  elif (is_dict(x)) do
+      let rebuilt = dict(map(entries(x), fn(e): [e[0], _lift_tree(e[1], depth + 1)] end))
+      | if (x[:kind] == None): rebuilt else: _lift_node(rebuilt, depth)
+    end
+  else: x
+end
+
+# The AST of a loop body to compile: unchanged unless it holds a break or
+# continue. Lifting is idempotent, so an inner loop of a lifted body is a no-op.
+def _prepare(ast):
+  if (_has_ctrl(ast)): _lift_tree(ast, 0) else: ast
+end
+
+# Evaluate `binds` in order, then the body with the results bound. A signal
+# raised by a bind ends the node at once and is returned as its result.
+def _comp_hoist(ast):
+  let names = foreach (b, ast[:binds]): b[:name] end
+  | let codes = foreach (b, ast[:binds]): _as_x(_comp(b[:expr])) end
+  | let body = _as_x(_comp(ast[:body]))
+  | let n = len(codes)
+  | [false, fn(value, env):
+      var cur_env = env
+      | var signal = None
+      | var i = 0
+      | while (i < n && signal == None):
+          let r = codes[i](value, cur_env)
+          | if (_ctrl(r) != "none"): signal = r
+            else do
+              cur_env = set(cur_env, names[i], r[:val])
+              | i += 1
+            end
+        end
+      | if (signal != None): signal else: body(value, cur_env)
     end]
 end
 
@@ -1687,6 +2567,8 @@ def _comp(ast):
   | if (k == "ident"): _comp_ident(ast)
     elif (k == "num" || k == "str" || k == "bool"): _comp_const(ast[:val])
     elif (k == "call"): _comp_call(ast)
+    elif (k == "apply"): _comp_apply(ast)
+    elif (k == "hoist"): _comp_hoist(ast)
     elif (k == "bin"): _comp_bin(ast)
     elif (k == "bin_chain"): _comp_bin_chain(ast[:first], ast[:stages])
     elif (k == "pipe"): _comp_pipe(ast)
@@ -1698,8 +2580,10 @@ def _comp(ast):
     elif (k == "sel") do
         let name = ast[:name]
         | let pred = _sel_pred(name)
-        | if (pred == None): [true, fn(value, env): error("Unknown selector: ." + name) end]
-          else: [true, fn(value, env): _apply_sel(pred, value) end]
+        | let host = if (pred == None): _HOST_SELECTORS[name] else: None
+        | if (pred != None): [true, fn(value, env): _apply_sel(pred, value) end]
+          elif (host != None): [true, fn(value, env): _apply_host_sel(host, value) end]
+          else: [true, fn(value, env): error("Unknown selector: ." + name) end]
       end
     elif (k == "un"): _comp_un(ast)
     elif (k == "arr"): _comp_arr(ast)
@@ -1713,10 +2597,11 @@ def _comp(ast):
     elif (k == "let_destructure" || k == "var_destructure"): _comp_destructure(ast)
     elif (k == "fn"): _comp_fn(ast)
     elif (k == "def"): _comp_def(ast)
-    elif (k == "do"): _comp(ast[:body])
+    elif (k == "do"): _comp_stmt(ast[:body])
     elif (k == "unless"): _comp_unless(ast)
     elif (k == "while"): _comp_cond_loop(ast, false)
     elif (k == "until"): _comp_cond_loop(ast, true)
+    elif (k == "loop"): _comp_cond_loop(ast, false)
     elif (k == "foreach"): _comp_foreach(ast)
     elif (k == "break"): _comp_break(ast)
     elif (k == "continue"): [false, fn(value, env): {val: value, env: env, ctrl: "continue"} end]
@@ -1731,8 +2616,17 @@ end
 
 # Compile an AST once; the result can be passed to mq_eval any number of
 # times without compiling again.
+# Top-level code: a break or continue that no loop caught is an error.
+def _top_code(ast):
+  let run = _as_x(_comp_stmt(ast))
+  | fn(value, env):
+      let r = run(value, env)
+      | if (_ctrl(r) == "none"): r else: _stray_signal(r)
+    end
+end
+
 def mq_compile(ast):
-  {kind: "compiled", ast: ast, run: _as_x(_comp(ast))}
+  {kind: "compiled", ast: ast, run: _top_code(ast)}
 end
 
 # Evaluate an AST node (or a mq_compile result), returning
@@ -1740,7 +2634,7 @@ end
 def mq_eval(ast, value, env):
   if (ast[:kind] == "compiled"): ast[:run](value, env)
   else do
-      let run = _as_x(_comp(ast))
+      let run = _top_code(ast)
       | run(value, env)
     end
 end
@@ -1749,7 +2643,7 @@ end
 def mq_eval_v(ast, value, env):
   if (ast[:kind] == "compiled"): ast[:run](value, env)[:val]
   else do
-      let run = _as_v(_comp(ast))
-      | run(value, env)
+      let run = _top_code(ast)
+      | run(value, env)[:val]
     end
 end

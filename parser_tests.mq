@@ -25,6 +25,12 @@ def test_parse_exact_ast(query, expected):
   assert_eq(_parse(query), expected)
 end
 
+def test_parse_break_with_colon_value():
+  let ast = _parse("break: 5")
+  | assert_eq({kind: ast[:kind], val_kind: ast[:val][:kind]}, {kind: "break", val_kind: "num"})
+  | assert_eq(_parse("[break: 1 + 2, 3]")[:items][0][:val][:kind], "bin")
+end
+
 def test_parse_break_with_value():
   let ast = _parse("break 5")
   | assert_eq({kind: ast[:kind], val_kind: ast[:val][:kind]}, {kind: "break", val_kind: "num"})
@@ -216,6 +222,111 @@ def test_parse_def_semicolon_terminator():
   let ast = _parse("def f(x): x;")
   | assert_eq(ast[:kind], "def")
   | assert_eq(ast[:body], {kind: "ident", name: "x"})
+end
+
+# A `def` body ends at EOF or a closing bracket without `;` / `end`.
+# @parametrize([
+#   ["def f(x): x", {kind: "def", name: "f", body: {kind: "ident", name: "x"}}],
+#   ["def f(x): x end", {kind: "def", name: "f", body: {kind: "ident", name: "x"}}],
+#   ["(def f(x): x)", {kind: "def", name: "f", body: {kind: "ident", name: "x"}}],
+# ])
+def test_parse_def_without_terminator(query, expected):
+  let ast = _parse(query)
+  | assert_eq({kind: ast[:kind], name: ast[:name], body: ast[:body]}, expected)
+end
+
+def test_parse_def_still_requires_terminator_before_other_tokens():
+  assert_eq(try: _parse("def f(x): x 1") catch: "error", "error")
+end
+
+# A lambda body ends at `,` or a closing bracket, wherever it sits.
+# @parametrize([
+#   ["f(fn(x): x, 1)", "call"],
+#   ["[fn(x): x, 1]", "arr"],
+#   ["{\"a\": fn(x): x, \"b\": 1}", "dict"],
+#   ["(fn(x): x)", "fn"],
+# ])
+def test_parse_fn_without_terminator(query, kind):
+  assert_eq(_parse(query)[:kind], kind)
+end
+
+def test_parse_fn_without_terminator_keeps_remaining_elements():
+  assert_eq(map(_parse("[fn(x): x + 1, fn(x): x * 2, 3]")[:items], fn(item): item[:kind] end), ["fn", "fn", "num"])
+  | assert_eq(len(_parse("f(fn(x): x | g(x), 1)")[:args]), 2)
+end
+
+# `break` with no value stops before `,` and closing brackets too.
+# @parametrize([
+#   ["[fn(x): break, 1]"],
+#   ["[fn(x): break]"],
+#   ["{\"a\": fn(x): break}"],
+#   ["f(fn(x): break, 1)"],
+# ])
+def test_parse_break_before_closer(query):
+  assert_eq(_parse(query) != None, true)
+end
+
+# Tokens left over after the program are an error, as in mq.
+# @parametrize([
+#   ["1 2"],
+#   ["1 )"],
+#   ["1 ]"],
+#   ["f(1))"],
+#   ["let g = fn(x): x + 1)"],
+#   ["1; 2"],
+#   ["f(1)(2)"],
+# ])
+def test_parse_rejects_trailing_tokens(query):
+  assert_eq(try: _parse(query) catch: "error", "error")
+end
+
+# @parametrize([
+#   ["1;"],
+#   ["1 end"],
+#   ["def f(x): x;"],
+#   ["def f(x): x end"],
+# ])
+def test_parse_accepts_closing_terminator_at_eof(query):
+  assert_eq(_parse(query) != None, true)
+end
+
+def test_parse_call_of_group_subscript_and_call():
+  assert_eq(_parse("(fn(x): x)(1)")[:kind], "apply")
+  | assert_eq(_parse("fs[0](1)")[:kind], "apply")
+  | assert_eq(_parse("(f)(1)(2)")[:kind], "apply")
+  | assert_eq(_parse("(f)(1)(2)")[:callee][:kind], "apply")
+  | assert_eq(_parse("f(1)")[:kind], "call")
+end
+
+def test_parse_arrow_and_implicit_lambda():
+  assert_eq(_parse("->(x): x + 1")[:kind], "fn")
+  | assert_eq(map(_parse("->(x, y): x")[:params], fn(p): p[:name] end), ["x", "y"])
+  | let implicit = _parse("fn: self + 1")
+  | assert_eq(map(implicit[:params], fn(p): p[:name] end), ["self"])
+  | assert_eq(implicit[:body][:kind], "pipe")
+  | assert_eq(implicit[:body][:stages][0], {kind: "ident", name: "self"})
+  | assert_eq(map(_parse("fn: self | len()")[:body][:stages], fn(s): s[:kind] end), ["ident", "self", "call"])
+end
+
+# `match` keeps requiring its `end`, and `let` / `var` are not expressions.
+# @parametrize([
+#   ["[match (1): | 1: \"a\", 3]"],
+#   ["[let x = 1, 2]"],
+#   ["f(var x = 1)"],
+# ])
+def test_parse_rejects_unclosed_match_and_binding_in_expression(query):
+  assert_eq(try: _parse(query) catch: "error", "error")
+end
+
+def test_parse_loop():
+  assert_eq(_parse("loop: break end")[:kind], "loop")
+  | assert_eq(_parse("loop do 1 end")[:body], {kind: "num", val: 1})
+  | assert_eq(map(_parse("[loop: break: 1, 2]")[:items], fn(item): item[:kind] end), ["loop", "num"])
+end
+
+def test_parse_if_branch_with_binding():
+  assert_eq(_parse("if (true): let a = 1")[:then][:kind], "let")
+  | assert_eq(_parse("if (false): 1 else: var b = 2")[:else_br][:kind], "var")
 end
 
 def test_parse_array_simple_and_compound_items():

@@ -9,6 +9,7 @@
 #   sel    {kind:"sel",    name}            - .h1
 #   dot    {kind:"dot"}                     - . (identity)
 #   call   {kind:"call",   name, args}
+#   apply  {kind:"apply",  callee, args}       - (fn(x): x)(1), fns[0](1)
 #   let    {kind:"let",    name, val}
 #   var    {kind:"var",    name, val}
 #   assign {kind:"assign", name, op, val}
@@ -17,9 +18,10 @@
 #   do     {kind:"do",     body}
 #   while  {kind:"while",  cond, body}
 #   until  {kind:"until",  cond, body}          - until (cond): body end  (== while (!cond): ...)
+#   loop   {kind:"loop",   body}                - loop: body end (runs until `break`)
 #   foreach{kind:"foreach",var, iter, body}
 #   def    {kind:"def",    name, params, body}
-#   fn     {kind:"fn",     params, body}
+#   fn     {kind:"fn",     params, body}       - fn(x): ..., ->(x): ..., fn: ... (== fn(self): self | ...)
 #   bin    {kind:"bin",    op, left, right}
 #   bin_chain {kind:"bin_chain", first, stages:[{op, right}, ...]}
 #   un     {kind:"un",     op, expr}
@@ -51,6 +53,12 @@ import "lexer"
   "ident": true, "sel": true, "dot": true, "istr": true,
 }
 | let _LIST_CLOSERS = {",": true, ")": true, "]": true, "}": true}
+# Keywords that start a statement dispatched by _parse_stmt, which mq also
+# accepts wherever an expression is expected, e.g. `[foreach (x, xs): x, 1]`.
+| let _EXPR_STMT_KWS = {
+  "def": true, "while": true, "until": true, "loop": true, "foreach": true, "try": true,
+  "match": true, "module": true, "break": true, "continue": true,
+}
 # Binding power of each binary operator, lowest first. `!` sits between
 # `&&` (2) and the comparisons (3); see _parse_binary. `??` and `..` bind
 # tighter than the arithmetic operators in real mq (e.g. `5 ?? 2 * 3` is
@@ -69,6 +77,14 @@ import "lexer"
 
 def _at_v(toks, pos, v):  toks[pos][:v] == v       end
 def _at_eof(toks, pos):   toks[pos][:t] == "eof"   end
+
+# True at EOF or at a `,` / closing bracket. No statement can contain these, so
+# a block body stops here and leaves the token to the enclosing call, array,
+# dict or group (mirroring real mq, where a non-root body ends before them).
+def _at_body_end(toks, pos):
+  let tok = toks[pos]
+  | tok[:t] == "eof" || (tok[:t] == "op" && _LIST_CLOSERS[tok[:v]] == true)
+end
 
 # Like _at_v, but also requires the token to be an "op" token -- otherwise a
 # string literal whose contents happen to equal an operator symbol (e.g.
@@ -133,7 +149,12 @@ end
 
 # Parse a token list produced by lex() and return the root AST node.
 def mq_parse(tokens):
-  _parse_pipe_list(tokens, 0)[:node]
+  let r = _parse_pipe_list(tokens, 0)
+  | let pos = r[:pos]
+  | # A final `;` or `end` may close the program, as in mq.
+  | let tail = if (_at_op(tokens, pos, ";") || (tokens[pos][:t] == "kw" && tokens[pos][:v] == "end")): pos + 1 else: pos
+  | if (_at_eof(tokens, tail)): r[:node]
+    else: error("Unexpected token: type=" + tokens[tail][:t] + " value='" + to_string(tokens[tail][:v]) + "'")
 end
 
 # ── pipe list ─────────────────────────────────────────────────────────────────
@@ -142,26 +163,47 @@ def _parse_pipe_list(toks, pos):
   _parse_pipe_rest(toks, _parse_stmt(toks, pos))
 end
 
+# Position where the next stage of a pipe starts, or None at the end of the
+# pipe. A stage follows a `|`, or a `def` closed by `;` / `end` directly, as in
+# `def f(x): x; f(1)`.
+def _next_stage(toks, node, pos):
+  if (_at_op(toks, pos, "|")): pos + 1
+  elif (node[:kind] == "def" && _def_continues(toks, pos)): pos
+  else: None
+end
+
+# True when a statement follows a `def` whose `;` / `end` was just consumed.
+# Anything that closes an enclosing construct is left to its owner.
+def _def_continues(toks, pos):
+  let prev = toks[pos - 1]
+  | let tok = toks[pos]
+  | (_at_op(toks, pos - 1, ";") || (prev[:t] == "kw" && prev[:v] == "end")) &&
+    !_at_body_end(toks, pos) && !_at_op(toks, pos, ";") &&
+    !(tok[:t] == "kw" && (tok[:v] == "end" || tok[:v] == "elif" || tok[:v] == "else" || tok[:v] == "catch"))
+end
+
 # Continue a pipe after its first stage, which the caller has already parsed.
-# Returns first_r unchanged when no `|` follows.
+# Returns first_r unchanged when no further stage follows.
 def _parse_pipe_rest(toks, first_r):
-  let cur = first_r[:pos]
-  | if (!_at_op(toks, cur, "|")): first_r
+  let start = _next_stage(toks, first_r[:node], first_r[:pos])
+  | if (start == None): first_r
     else do
-      let second_r = _parse_stmt(toks, cur + 1)
+      let second_r = _parse_stmt(toks, start)
       | var next = second_r[:pos]
-      | if (!_at_op(toks, next, "|")):
+      | var next_start = _next_stage(toks, second_r[:node], next)
+      | if (next_start == None):
           {node: {kind: "pipe", stages: [first_r[:node], second_r[:node]]}, pos: next}
         else do
           # Cons links keep parsing linear for long pipes. Materialize the
           # stage array once, so repeated evaluation can index it directly.
           var reversed = [second_r[:node], [first_r[:node], None]]
           | var count = 2
-          | while (_at_op(toks, next, "|")):
-              let rr = _parse_stmt(toks, next + 1)
+          | while (next_start != None):
+              let rr = _parse_stmt(toks, next_start)
               | reversed = [rr[:node], reversed]
               | count += 1
               | next = rr[:pos]
+              | next_start = _next_stage(toks, rr[:node], next)
             end
           | let stages = reverse(foreach (i, range(0, count - 1)):
               let stage = reversed[0]
@@ -186,6 +228,7 @@ def _parse_stmt(toks, pos):
         elif (v == "do"):      _parse_do(toks, pos)
         elif (v == "while"):   _parse_while(toks, pos)
         elif (v == "until"):   _parse_until(toks, pos)
+        elif (v == "loop"):    _parse_loop(toks, pos)
         elif (v == "foreach"): _parse_foreach(toks, pos)
         elif (v == "break"):   _parse_break(toks, pos)
         elif (v == "continue"): {node: {kind: "continue"}, pos: pos + 1}
@@ -300,13 +343,22 @@ end
 
 # ── def ───────────────────────────────────────────────────────────────────────
 
+# Position after the terminator of a `def`, `do`, `while`, `until`, `foreach` or
+# `module` body: `;` or `end` is consumed, while EOF, `,` and a closing bracket
+# end the body without being consumed. `match` still requires its `end`.
+def _end_body(toks, pos):
+  if (_at_v(toks, pos, ";") || _at_v(toks, pos, "end")): pos + 1
+  elif (_at_body_end(toks, pos)): pos
+  else: _expect_v(toks, pos, "end")
+end
+
 def _parse_def(toks, pos):
   let name = _expect_t(toks, pos + 1, "ident")[:v]
   | let pr  = _parse_params(toks, _expect_v(toks, pos + 2, "("))
   | let p4  = _expect_v(toks, pr[:pos], ")")
   | let body_pos = if (_at_v(toks, p4, ":") || _at_v(toks, p4, "do")): p4 + 1 else: p4
   | let br  = _parse_pipe_list(toks, body_pos)
-  | let p5  = if (_at_v(toks, br[:pos], ";")): br[:pos] + 1 else: _expect_v(toks, br[:pos], "end")
+  | let p5  = _end_body(toks, br[:pos])
   | {node: {kind: "def", name: name, params: pr[:params], body: br[:node]}, pos: p5}
 end
 
@@ -387,6 +439,9 @@ def _parse_if_body(toks, pos):
     elif (v == "break"): _parse_break(toks, pos)
     elif (v == "continue"): {node: {kind: "continue"}, pos: pos + 1}
     elif (v == "try"): _parse_try(toks, pos)
+    elif (toks[pos][:t] == "kw" && v == "let"): _parse_let(toks, pos)
+    elif (toks[pos][:t] == "kw" && v == "var"): _parse_var_decl(toks, pos)
+    elif (toks[pos][:t] == "ident" && _is_assign_op(_peekn(toks, pos, 1)[:v])): _parse_assign(toks, pos)
     else: _parse_expr(toks, pos)
 end
 
@@ -394,7 +449,7 @@ end
 
 def _parse_do(toks, pos):
   let br = _parse_pipe_list(toks, pos + 1)
-  | {node: {kind: "do", body: br[:node]}, pos: _expect_v(toks, br[:pos], "end")}
+  | {node: {kind: "do", body: br[:node]}, pos: _end_body(toks, br[:pos])}
 end
 
 # ── while ─────────────────────────────────────────────────────────────────────
@@ -413,7 +468,16 @@ end
 def _parse_cond_loop(toks, pos, kind):
   let cr = _parse_cond(toks, pos + 1)
   | let br = _parse_pipe_list(toks, cr[:pos])
-  | {node: {kind: kind, cond: cr[:node], body: br[:node]}, pos: _expect_v(toks, br[:pos], "end")}
+  | {node: {kind: kind, cond: cr[:node], body: br[:node]}, pos: _end_body(toks, br[:pos])}
+end
+
+# ── loop ──────────────────────────────────────────────────────────────────────
+
+# loop: body end -- repeats body until a `break`; `do` may replace the `:`.
+def _parse_loop(toks, pos):
+  let p2 = if (_at_v(toks, pos + 1, ":") || _at_v(toks, pos + 1, "do")): pos + 2 else: pos + 1
+  | let br = _parse_pipe_list(toks, p2)
+  | {node: {kind: "loop", body: br[:node]}, pos: _end_body(toks, br[:pos])}
 end
 
 # ── foreach ───────────────────────────────────────────────────────────────────
@@ -424,20 +488,22 @@ def _parse_foreach(toks, pos):
   | let ir = _parse_expr(toks, _expect_v(toks, p3 + 1, ","))
   | let body_pos = _skip_v(toks, _expect_v(toks, ir[:pos], ")"), ":")
   | let br = _parse_pipe_list(toks, body_pos)
-  | {node: {kind: "foreach", iter_var: iter_var, iter: ir[:node], body: br[:node]}, pos: _expect_v(toks, br[:pos], "end")}
+  | {node: {kind: "foreach", iter_var: iter_var, iter: ir[:node], body: br[:node]}, pos: _end_body(toks, br[:pos])}
 end
 
 # ── break / continue ─────────────────────────────────────────────────────────
 
 def _at_break_stop(toks, pos):
   let tok = toks[pos]
-  | tok[:t] == "eof" || tok[:v] == "|" || tok[:v] == "end" || tok[:v] == ")" ||
+  | tok[:t] == "eof" || tok[:v] == "|" || tok[:v] == "end" || _at_body_end(toks, pos) ||
     tok[:v] == "elif" || tok[:v] == "else" || tok[:v] == "catch" || tok[:v] == ";"
 end
 
+# `break` returns the loop's results so far, `break: expr` (as in mq) or the
+# older `break expr` ends the loop with `expr` instead.
 def _parse_break(toks, pos):
-  let p2 = pos + 1
-  | if (_at_break_stop(toks, p2)):
+  let p2 = if (_at_op(toks, pos + 1, ":")): pos + 2 else: pos + 1
+  | if (p2 == pos + 1 && _at_break_stop(toks, p2)):
       {node: {kind: "break", val: None}, pos: p2}
     else do
       let vr = _parse_expr(toks, p2)
@@ -550,7 +616,7 @@ end
 def _parse_module(toks, pos):
   let name = _expect_t(toks, pos + 1, "ident")[:v]
   | let br = _parse_pipe_list(toks, _skip_v(toks, pos + 2, ":"))
-  | {node: {kind: "module", name: name, body: br[:node]}, pos: _expect_v(toks, br[:pos], "end")}
+  | {node: {kind: "module", name: name, body: br[:node]}, pos: _end_body(toks, br[:pos])}
 end
 
 # ── string interpolation ──────────────────────────────────────────────────────
@@ -711,22 +777,29 @@ end
 
 def _parse_postfix(toks, pos):
   let br = _parse_primary(toks, pos)
-  | if (_at_postfix(toks[br[:pos]], br[:node])): _parse_postfix_ops(toks, br[:node], br[:pos])
+  | let grouped = _at_op(toks, pos, "(")
+  | if (_at_postfix(toks[br[:pos]], br[:node], grouped)): _parse_postfix_ops(toks, br[:node], br[:pos], grouped)
     else: br
 end
 
-def _at_postfix(tok, node):
-  tok[:v] == "[" || (tok[:t] == "op" && ((tok[:v] == "(" && node[:kind] == "ident") || tok[:v] == "?"))
+# `(` starts a call on a bare name, on a parenthesized group (`(fn(x): x)(1)`)
+# and on a subscript or an earlier such call (`fns[0](1)`, `(f)(1)(2)`).
+# `callable` says the node so far is one of the latter two.
+def _at_postfix(tok, node, callable):
+  tok[:v] == "[" || (tok[:t] == "op" && ((tok[:v] == "(" && (callable || node[:kind] == "ident")) || tok[:v] == "?"))
 end
 
-def _parse_postfix_ops(toks, base_node, pos):
+def _parse_postfix_ops(toks, base_node, pos, grouped):
   var node = base_node
   | var cur  = pos
-  | while (_at_postfix(toks[cur], node)):
+  | var callable = grouped
+  | let named = !grouped
+  | while (_at_postfix(toks[cur], node, callable)):
       if (_at_v(toks, cur, "[")) do
           let r = _parse_subscript(toks, node, cur)
           | node = r[:node]
           | cur  = r[:pos]
+          | callable = true
         end
       elif (_at_op(toks, cur, "?")) do
           node = {kind: "trysuppress", target: node}
@@ -734,7 +807,14 @@ def _parse_postfix_ops(toks, base_node, pos):
         end
       else do
           let ar = _parse_call_args(toks, cur + 1)
-          | node = {kind: "call", name: node[:name], args: ar[:args]}
+          | if (named && node[:kind] == "ident") do
+              node = {kind: "call", name: node[:name], args: ar[:args]}
+              | callable = false
+            end
+            else do
+              node = {kind: "apply", callee: node, args: ar[:args]}
+              | callable = true
+            end
           | cur  = ar[:pos]
         end
     end
@@ -830,7 +910,9 @@ def _parse_primary(toks, pos):
       {node: {kind: "none"},               pos: pos + 1}
     elif (t == "atom"):
       {node: {kind: "atom", name: tok[:v]}, pos: pos + 1}
-    elif (t == "kw" && tok[:v] == "fn"):
+    elif (t == "kw" && tok[:v] == "fn" && _at_op(toks, pos + 1, ":")):
+      _parse_implicit_fn(toks, pos)
+    elif ((t == "kw" && tok[:v] == "fn") || (t == "op" && tok[:v] == "->")):
       _parse_fn(toks, pos)
     elif (t == "kw" && tok[:v] == "if"):
       _parse_if(toks, pos)
@@ -838,6 +920,8 @@ def _parse_primary(toks, pos):
       _parse_unless(toks, pos)
     elif (t == "kw" && tok[:v] == "do"):
       _parse_do(toks, pos)
+    elif (t == "kw" && _EXPR_STMT_KWS[tok[:v]] == true):
+      _parse_stmt(toks, pos)
     elif (t == "kw" && tok[:v] == "self"):
       {node: {kind: "self"}, pos: pos + 1}
     elif (t == "kw" && tok[:v] == "nodes"):
@@ -857,12 +941,29 @@ def _parse_paren(toks, pos):
   | {node: ir[:node], pos: _expect_v(toks, ir[:pos], ")")}
 end
 
+# Position after the optional `;` / `end` that closes a lambda body. A lambda
+# inside a call, array, dict or group ends at its `,` or closing bracket
+# instead, which is left to the enclosing construct.
+def _skip_fn_end(toks, pos):
+  if (_at_v(toks, pos, ";") || _at_v(toks, pos, "end")): pos + 1 else: pos
+end
+
+# `fn(params): body` or `->(params): body`; `do` may replace the `:`.
 def _parse_fn(toks, pos):
   let pr = _parse_params(toks, _expect_v(toks, pos + 1, "("))
-  | let body_pos = _skip_v(toks, _expect_v(toks, pr[:pos], ")"), ":")
+  | let p3 = _expect_v(toks, pr[:pos], ")")
+  | let body_pos = if (_at_v(toks, p3, ":") || _at_v(toks, p3, "do")): p3 + 1 else: p3
   | let br = _parse_pipe_list(toks, body_pos)
-  | let p5 = if (_at_v(toks, br[:pos], ";") || _at_v(toks, br[:pos], "end")): br[:pos] + 1 else: br[:pos]
-  | {node: {kind: "fn", params: pr[:params], body: br[:node]}, pos: p5}
+  | {node: {kind: "fn", params: pr[:params], body: br[:node]}, pos: _skip_fn_end(toks, br[:pos])}
+end
+
+# `fn: body` takes one argument and runs the body with it as the pipeline
+# value, exactly as `fn(self): self | body`.
+def _parse_implicit_fn(toks, pos):
+  let br = _parse_pipe_list(toks, pos + 2)
+  | let arg = {kind: "ident", name: "self"}
+  | let stages = if (br[:node][:kind] == "pipe"): [arg] + br[:node][:stages] else: [arg, br[:node]]
+  | {node: {kind: "fn", params: [{name: "self", default: None}], body: {kind: "pipe", stages: stages}}, pos: _skip_fn_end(toks, br[:pos])}
 end
 
 def _parse_array(toks, pos):
