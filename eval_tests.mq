@@ -155,7 +155,7 @@ end
 #   ["true || error(\"unreachable\") || error(\"unreachable\") || error(\"unreachable\")", true],
 #   ["None ?? 5 ?? error(\"unreachable\") ?? error(\"unreachable\")", 5],
 #   ["1 + (let x = 2 | x) + x + x", 7],
-#   ["1 + (let x = 2 | x) + (x += 1) + x", 9],
+#   ["1 + (let x = 2 | x) + (x += 1 | x) + x", 9],
 # ])
 def test_eval_binary_chains(query, expected):
   assert_eq(_run(query, None), expected)
@@ -175,12 +175,12 @@ end
 
 def test_eval_long_pipe_stops_on_break():
   let steps = join(map(range(1, 64), fn(i): "x += 1" end), " | ")
-  | assert_eq(_run("var x = 0 | " + steps + " | break x | error(\"unreachable\")", ""), 64)
+  | assert_eq(_run("while (true): var x = 0 | " + steps + " | break: x | error(\"unreachable\") end", ""), 64)
 end
 
 def test_eval_long_pipe_value_stages_keep_environment_and_break():
   let steps = join(map(range(0, 31), fn(i): ". + 1" end), " | ")
-  | assert_eq(_run("let base = 5 | 0 | " + steps + " | break base + . | error(\"unreachable\")", None), 37)
+  | assert_eq(_run("let base = 5 | while (true): 0 | " + steps + " | break: base + . | error(\"unreachable\") end", None), 37)
 end
 
 def test_many_supplied_parameters_preserve_closure_and_shadowing():
@@ -206,7 +206,6 @@ def test_one_argument_call_preserves_shadowing_defaults_and_closure():
   | assert_eq(_run("def f(x=error(\"unreachable\")): x + 1 end | f(2)", None), 3)
   | assert_eq(_run("def f(x=7): x + 1 end | f()", None), 8)
   | assert_eq(_run("let y = 4 | let f = fn(x): x + y end | f(2)", None), 6)
-  | assert_eq(_run("def f(x): x end | f(1, 2)", None), 1)
 end
 
 # -- try / catch --
@@ -413,7 +412,7 @@ def test_user_function_shadows_builtin():
 end
 
 def test_module_bare_name_not_leaked():
-  let ok = try: _run("module math: def add(a, b): a + b; end | add(1, 2)", "") == "unreachable"
+  let ok = try: _run("module math: def plus(a, b): a + b; end | plus(1, 2)", "") == "unreachable"
            catch: true
   | assert_eq(ok, true)
 end
@@ -564,7 +563,7 @@ end
 # @parametrize([
 #   ["foreach (x, [1, 2, 3]): if (x > 1): x * 10 else: x end end", [1, 20, 30]],
 #   ["var i = 0 | while (i < 10): i += 1 | if (i == 4): break i end end", 4],
-#   ["var i = 0 | var t = 0 | while (i < 6): i += 1 | if (i % 2 == 1): continue end | t += i end | t", 6],
+#   ["var i = 0 | var t = 0 | while (i < 6): i += 1 | if (i % 2 == 1): continue else: t += i end | t", 12],
 #   ["foreach (x, [1, 2, 3, 4]): if (x == 3): break x * 100 end | x end", 3],
 #   ["foreach (x, [1, 2, 3, 4]): if (x % 2 == 0): continue end | x end", 4],
 #   ["foreach (x, [1, 2]): foreach (y, [3, 4]): if (y == 4): break x * y end | y end end", [4, 4]],
@@ -633,8 +632,297 @@ def test_compiled_program_matches_evaluating_its_ast():
 end
 
 def test_function_values_carry_compiled_code():
-  let result = _run("def f(x): x + 1 end | f", None)
+  let result = _run("def f(x): x + 1 end | [f] | first", None)
   | assert_eq(result[:kind], "fn")
   | assert_eq(result[:name], "f")
   | assert_eq(result[:body], {kind: "bin", op: "+", left: {kind: "ident", name: "x"}, right: {kind: "num", val: 1}})
+end
+
+# A parenthesized group, a subscript or an earlier call can be called directly.
+# @parametrize([
+#   ["(fn(x): x + 1)(2)", 3],
+#   ["(fn(x, y): x + y)(1, 2)", 3],
+#   ["(fn(): 5)()", 5],
+#   ["(fn(x): x + 1)(2) + 1", 4],
+#   ["(fn(x): fn(y): x + y)(1)(2)", 3],
+#   ["let f = fn(x): x * 2; | (f)(4)", 8],
+#   ["let fs = [fn(x): x + 1, fn(x): x * 10] | fs[1](4)", 40],
+#   ["map([1, 2], fn(x): (fn(y): y * 2)(x))", [2, 4]],
+#   ["(fn(x): x + 1)(2) | (fn(y): y * 3)(.)", 9],
+# ])
+def test_eval_call_of_computed_function(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+def test_eval_call_of_non_function_fails():
+  assert_eq(try: _run("(1 + 2)(3)", None) catch: "error", "error")
+end
+
+# A statement may follow a `def` closed by `;` or `end` without a `|`.
+# @parametrize([
+#   ["def f(x): x + 1; f(1)", 2],
+#   ["def f(x): x + 1 end f(1)", 2],
+#   ["def f(x): x + 1; def g(x): f(x) * 2; g(1)", 4],
+#   ["def f(x): x + 1; | f(1)", 2],
+# ])
+def test_eval_statement_after_closed_def(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# @parametrize([
+#   ["var t = 0 | if (true): t += 1 | t", 1],
+#   ["var t = 0 | if (false): t = 9 else: t += 5 | t", 5],
+# ])
+def test_eval_assignment_as_branch_body(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# `->(x): ...` is an alias of `fn(x): ...`, and `fn: ...` is `fn(self): self | ...`.
+# @parametrize([
+#   ["map([1, 2], ->(x): x * 10)", [10, 20]],
+#   ["let f = ->(x, y): x + y; | f(1, 2)", 3],
+#   ["let f = ->(x): x + 1 end | f(1)", 2],
+#   ["let f = fn(x) do x + 1 end | f(1)", 2],
+#   ["filter([1, 2, 3, 4], fn: self > 2)", [3, 4]],
+#   ["map([\"a b\", \"c d e\"], fn: split(\" \") | len())", [2, 3]],
+#   ["map([[1, 2], [3]], fn: map(fn: self + 1))", [[2, 3], [4]]],
+#   ["let f = fn: self + 1; | f(3)", 4],
+#   ["[fn: self, 1] | len()", 2],
+# ])
+def test_eval_arrow_and_implicit_lambda(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# A call with one required argument fewer than the parameters takes the piped
+# value as its first argument.
+# @parametrize([
+#   ["let f = fn(x): x + 1; | 10 | f()", 11],
+#   ["let f = fn: self + 1; | 10 | f()", 11],
+#   ["5 | (fn: self * 2)()", 10],
+#   ["let f = fn(x=5): x; | 10 | f()", 5],
+#   ["let f = fn(x, y=5): [x, y]; | 10 | f()", [10, 5]],
+#   ["def g(x, y): [x, y]; | 10 | g(1)", [10, 1]],
+#   ["def g(x, y=5): [x, y]; | 10 | g(1, 2)", [1, 2]],
+#   ["def g(): 7; | 10 | g()", 7],
+# ])
+def test_eval_call_takes_piped_value_as_first_argument(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# `do`, `while`, `until`, `foreach`, `def` and `module` end at `,`, a closing
+# bracket or EOF without `end`, and may appear wherever an expression can.
+# @parametrize([
+#   ["[do 1 + 1, 2]", [2, 2]],
+#   ["(do 1 + 1)", 2],
+#   ["{\"a\": do 1 end, \"b\": 2}", {a: 1, b: 2}],
+#   ["[foreach (x, [1, 2]): x * 2, 3]", [[2, 4], 3]],
+#   ["len(foreach (x, [1, 2]): x * 2)", 2],
+#   ["map([1, 2], fn(x): foreach (y, [x]): y)", [[1], [2]]],
+#   ["[def f(x): x, 1] | len()", 2],
+#   ["[while (false): 1, 2] | len()", 2],
+#   ["[until (true): 1, 2] | len()", 2],
+#   ["[match (1): | 1: \"a\" | _: \"b\" end, 3]", ["a", 3]],
+#   ["[try: 1 catch: 2, 3]", [1, 3]],
+#   ["1 + do 2 end", 3],
+#   ["foreach (x, [1, 2]): x * 2", [2, 4]],
+#   ["foreach (x, [1, 2]): x * 2;", [2, 4]],
+#   ["do 1 + 1;", 2],
+#   ["var i = 0 | while (i < 3): i += 1 | i", 3],
+#   ["module m: def f(x): x; end | m::f(1)", 1],
+#   ["[module m: def f(x): x; end, 1] | len()", 2],
+# ])
+def test_eval_blocks_without_end_before_closers(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# A call must supply every parameter without a default and no more than the
+# function declares (the piped value counts as the first argument).
+# @parametrize([
+#   ["def f(x): x; | f(1, 2)"],
+#   ["def f(x, y): [x, y]; | f()"],
+#   ["def f(): 1; | f(1)"],
+#   ["def f(x, y=2): [x, y]; | f(1, 2, 3)"],
+#   ["let f = fn: self; | f(1, 2)"],
+#   ["(fn(x, y): x + y)()"],
+# ])
+def test_eval_call_with_wrong_number_of_arguments_fails(query):
+  assert_eq(try: _run(query, None) catch: "error", "error")
+end
+
+# @parametrize([
+#   ["def f(x, y=2): [x, y]; | f(1)", [1, 2]],
+#   ["def f(x, y=2): [x, y]; | f(1, 3)", [1, 3]],
+#   ["def f(x, y): [x, y]; | 5 | f(1)", [5, 1]],
+#   ["def f(): 7; | f()", 7],
+# ])
+def test_eval_call_with_valid_number_of_arguments(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# `break` and `continue` reach their loop from inside an operand.
+# @parametrize([
+#   ["foreach (x, [1, 2, 3]): [if (x > 1): break else: x, 9]", [[1, 9]]],
+#   ["foreach (x, [1, 2, 3]): [if (x == 2): continue else: x, 9]", [[1, 9], [3, 9]]],
+#   ["foreach (x, [1, 2, 3]): {\"a\": if (x > 1): break else: x}", [{a: 1}]],
+#   ["foreach (x, [1, 2, 3]): len([if (x > 1): break else: x])", [1]],
+#   ["foreach (x, [1, 2, 3]): 1 + if (x > 1): break else: x", [2]],
+#   ["foreach (x, [1, 2, 3]): to_string(if (x > 1): break else: x)", ["1"]],
+#   ["foreach (x, [1, 2, 3]): let y = if (x > 1): break else: x | y * 2", [2]],
+#   ["foreach (x, [1, 2, 3]): [x, if (x > 1): break else: x]", [[1, 1]]],
+#   ["foreach (x, [1, 2, 3]): (fn(y): y)(if (x > 1): break else: x)", [1]],
+#   ["foreach (x, [1, 2, 3]): match (if (x > 1): break else: x): | 1: \"one\" | _: \"other\" end", ["one"]],
+#   ["foreach (x, [1, 2, 3]): if (if (x > 1): break else: true): 1 else: 2", [1]],
+#   ["foreach (x, [1, 2, 3]): [break: 5]", 5],
+#   ["foreach (x, [[1, 2], [3, 4]]): foreach (y, x): [if (y == 2): break else: y]", [[[1]], [[3], [4]]]],
+#   ["var i = 0 | while (true): i += 1 | [if (i > 3): break else: i]", [3]],
+#   ["var i = 0 | until (i >= 5): i += 1 | [if (i == 2): continue else: i]", [5]],
+# ])
+def test_eval_break_and_continue_inside_operands(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+def test_eval_continue_inside_operand_keeps_earlier_assignments():
+  let q = "var i = 0 | var t = 0 | while (i < 5): i += 1 | t += 10 | [if (i == 2): continue else: i] end | [i, t]"
+  | assert_eq(_run(q, None), [5, 50])
+end
+
+# Plain `break` leaves with the results so far, `break: expr` with expr.
+# @parametrize([
+#   ["foreach (x, [1, 2, 3]): if (x > 1): break else: x", [1]],
+#   ["foreach (x, [1, 2, 3]): if (x > 1): break: \"stop\" else: x", "stop"],
+#   ["foreach (x, [1, 2, 3]): if (x > 1): break | x * 10", [10]],
+#   ["var i = 0 | while (true): i += 1 | if (i > 3): break else: i", 3],
+#   ["var i = 0 | while (true): i += 1 | if (i > 3): break: 77 else: i", 77],
+#   ["var i = 0 | until (i > 10): i += 1 | if (i > 3): break else: i * 2", 6],
+#   ["foreach (x, [1, 2]): while (true): break: x * 10", [10, 20]],
+# ])
+def test_eval_break_results(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# A break or continue with no loop around it is an error, even through a call.
+# @parametrize([
+#   ["break"],
+#   ["continue"],
+#   ["[1, 2] | map(fn(x): if (x > 1): break else: x)"],
+#   ["def f(x): if (x > 1): break else: x; | foreach (x, [1, 2, 3]): f(x)"],
+# ])
+def test_eval_stray_break_is_an_error(query):
+  assert_eq(try: _run(query, None) catch: "error", "error")
+end
+
+def test_eval_try_does_not_catch_break():
+  assert_eq(_run("foreach (x, [1, 2, 3]): try: if (x > 1): break else: x catch: 0", None), [1])
+  | assert_eq(_run("foreach (x, [1, 2, 3]): try: [if (x > 1): break else: x, 9] catch: 0", None), [[1, 9]])
+end
+
+# `loop` repeats until a `break`; its value is the last completed iteration's,
+# or the input when there is none.
+# @parametrize([
+#   ["var n = 0 | loop: n += 1 | if (n > 3): break: n else: n end", 4],
+#   ["var n = 0 | loop do n += 1 | if (n > 3): break: n else: n end", 4],
+#   ["var n = 0 | loop: n += 1 | if (n < 3): continue elif (n > 5): break else: n end | n", 6],
+#   ["5 | loop: break end", 5],
+#   ["5 | loop: break: 7 end", 7],
+#   ["var i = 0 | loop: i += 1 | [if (i > 2): break else: i] end", [2]],
+#   ["[loop: break: 1, 2]", [1, 2]],
+#   ["foreach (x, [1, 2]): loop: break: x * 10", [10, 20]],
+#   ["var i = 0 | 5 | loop: i += 1 | if (i > 3): break else: . + 1 end", 8],
+# ])
+def test_eval_loop(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# `while` / `until` give None when no iteration completed, and chain each
+# iteration's value into the next one.
+# @parametrize([
+#   ["5 | while (false): 1 end", None],
+#   ["5 | until (true): 1 end", None],
+#   ["5 | while (true): break end", None],
+#   ["var i = 0 | while (i < 3): i += 1 | continue end", None],
+#   ["var i = 0 | 5 | while (i < 3): i += 1 | . + 1 end", 8],
+#   ["var i = 0 | 5 | until (i >= 3): i += 1 | . * 2 end", 40],
+#   ["var i = 0 | 5 | while (i < 3): i += 1 | if (i == 2): continue else: . + 1 end", 7],
+# ])
+def test_eval_conditional_loop_results(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# Signals raised by lazily evaluated operands, `elif` conditions and loop
+# conditions reach the loop that encloses them.
+# @parametrize([
+#   ["foreach (x, [1, 2, 3]): true && (if (x > 1): break else: true)", [true]],
+#   ["foreach (x, [1, 2, 3]): false || (if (x > 1): break else: x)", [1]],
+#   ["foreach (x, [1, 2, 3]): None ?? (if (x > 1): break else: x)", [1]],
+#   ["foreach (x, [1, 2, 3]): true && true && (if (x > 1): break else: true)", [true]],
+#   ["foreach (x, [1, 2, 3]): [true && (if (x == 2): continue else: x), 0]", [[1, 0], [3, 0]]],
+#   ["foreach (x, [1, 2, 3]): if (false): 1 elif (if (x > 1): break else: true): 2 else: 3", [2]],
+#   ["foreach (x, [1, 2, 3]): if (x == 1): 10 elif (if (x > 2): break else: x == 2): 20 else: 30", [10, 20]],
+#   ["foreach (x, [1, 2, 3]): var i = 0 | while (if (x > 1): break else: i < 1): i += 1 | i", [1]],
+#   ["foreach (x, [1, 2, 3]): foreach (y, (if (x > 1): break else: [x])): y", [[1]]],
+# ])
+def test_eval_signals_from_lazy_operands_and_conditions(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# `let`, `var`, destructuring, assignment, `def` and `module` leave the piped
+# value unchanged.
+# @parametrize([
+#   ["7 | let y = 3 | .", 7],
+#   ["7 | var y = 3 | .", 7],
+#   ["7 | let [a, b] = [1, 2] | .", 7],
+#   ["7 | let {a} = {\"a\": 1} | .", 7],
+#   ["var i = 0 | 7 | i += 1", 7],
+#   ["var i = 0 | 7 | i = 10 | .", 7],
+#   ["7 | def f(x): x; | .", 7],
+#   ["7 | module m: def f(x): x; end | .", 7],
+#   ["3 | var y = 1 | y += 1 | y", 2],
+#   ["5 | if (true): let a = 1", 5],
+#   ["5 | if (false): 1 else: var b = 2", 5],
+# ])
+def test_eval_bindings_keep_the_piped_value(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# A match guard that can signal ends the match with the signal.
+# @parametrize([
+#   ["foreach (x, [1, 2, 3]): match (x): | n if (if (n == 2): break else: n > 0): n * 10 | _: 0 end", [10]],
+#   ["foreach (x, [1, 2, 3]): match (x): | n if (if (n == 2): continue else: n > 0): n * 10 | _: 0 end", [10, 30]],
+#   ["foreach (x, [1, 2, 3]): match (x): | 2 if (if (x == 2): break: 99 else: true): \"two\" | _: x end", 99],
+#   ["foreach (x, [1, 2, 3]): [match (x): | n if (if (n == 3): break else: n > 1): \"big\" | _: \"small\" end, 0]", [["small", 0], ["big", 0]]],
+# ])
+def test_eval_signal_from_match_guard(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+# A built-in is a function value wherever a value is expected, and is called in
+# statement position; a user function with at most one required parameter is
+# called there too, receiving the piped value.
+# @parametrize([
+#   ["map([1, 2], to_string)", ["1", "2"]],
+#   ["map([[1], [2, 3]], len)", [1, 2]],
+#   ["sort_by([3, 1, 2], identity)", [1, 2, 3]],
+#   ["fold([1, 2, 3], 0, add)", 6],
+#   ["let g = len | [1, 2] | g", 2],
+#   ["let g = len | g([1, 2, 3])", 3],
+#   ["[1, 2] | len", 2],
+#   ["\"abc\" | upcase", "ABC"],
+#   ["def f(x): x + 1; | 5 | f", 6],
+#   ["let g = fn(x): x * 2; | 4 | g", 8],
+#   ["def k(): 7; | k", 7],
+#   ["def f(x): x + 1; | map([1, 2], f)", [2, 3]],
+#   ["def f(x, y): x + y; | [f] | first | do (.)(1, 2) end", 3],
+#   ["select(5, true)", 5],
+#   ["select(5, false)", None],
+#   ["7 | select(true)", 7],
+#   ["chunk_by([1, 1, 2], identity)", [[1, 1], [2]]],
+#   ["flip(sub, 2, 10)", 8],
+# ])
+def test_eval_function_values_and_statement_calls(query, expected):
+  assert_eq(_run(query, None), expected)
+end
+
+def test_eval_bare_builtin_in_operand_is_a_function_value():
+  assert_eq(_run("let fs = [len, 0] | fs[0]([1, 2, 3])", None), 3)
+  | assert_eq(_run("[1, 2] | len > 0", None), false)
 end

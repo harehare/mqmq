@@ -145,6 +145,51 @@ end
 
 # Lex an interpolated string s"...${expr}..." starting at the opening quote
 # (index i). Returns {segs: [{kind:"text",val} | {kind:"expr",val}], j: <end>}.
+# ── escape sequences ──────────────────────────────────────────────────────────
+
+let _HEX_DIGITS = {
+  "0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5, "6": 6, "7": 7, "8": 8, "9": 9,
+  "a": 10, "b": 11, "c": 12, "d": 13, "e": 14, "f": 15,
+  "A": 10, "B": 11, "C": 12, "D": 13, "E": 14, "F": 15,
+}
+|
+
+# Value of the hex digits chars[from..to-1], or None when one is not a digit.
+def _hex_value(chars, from, to):
+  var acc = 0
+  | var ok = to > from
+  | var i = from
+  | while (ok && i < to):
+      let d = _HEX_DIGITS[chars[i]]
+      | if (d == None): ok = false
+        else: acc = acc * 16 + d
+      | i += 1
+    end
+  | if (ok): acc else: None
+end
+
+# Decode the escape whose backslash is at chars[pos] (a character follows it)
+# as {text, next}: `\n`, `\t`, `\r`, `\xNN`, `\uNNNN` and `\u{N...}` name a
+# character, and any other escaped character stands for itself.
+def _decode_escape(chars, pos, n):
+  let e = chars[pos + 1]
+  | if (e == "n"): {text: "\n", next: pos + 2}
+    elif (e == "t"): {text: "\t", next: pos + 2}
+    elif (e == "r"): {text: "\r", next: pos + 2}
+    elif (e == "x" && pos + 4 <= n && _hex_value(chars, pos + 2, pos + 4) != None):
+      {text: implode([_hex_value(chars, pos + 2, pos + 4)]), next: pos + 4}
+    elif (e == "u" && pos + 2 < n && chars[pos + 2] == "{") do
+        var close = pos + 3
+        | while (close < n && chars[close] != "}" && close < pos + 10): close += 1 end
+        | let code = if (close < n && chars[close] == "}"): _hex_value(chars, pos + 3, close) else: None
+        | if (code != None): {text: implode([code]), next: close + 1}
+          else: {text: e, next: pos + 2}
+      end
+    elif (e == "u" && pos + 6 <= n && _hex_value(chars, pos + 2, pos + 6) != None):
+      {text: implode([_hex_value(chars, pos + 2, pos + 6)]), next: pos + 6}
+    else: {text: e, next: pos + 2}
+end
+
 # Common case: an interpolated string with no escapes or expressions needs
 # only one slice, rather than a character-by-character string build.
 def _lex_interp_string(chars, i, n):
@@ -207,10 +252,8 @@ def _lex_interp_string_chunks(chars, i, n, first_special):
             end
             else: parts += [span]
         end
-        | let escaped = chars[j + 1]
-        | let decoded = if (escaped == "n"): "\n"
-                        elif (escaped == "t"): "\t"
-                        else: escaped
+        | let esc = _decode_escape(chars, j, n)
+        | let decoded = esc[:text]
         | if (linked) do
             tail = [decoded, tail]
             | tail_len += 1
@@ -219,7 +262,7 @@ def _lex_interp_string_chunks(chars, i, n, first_special):
             parts += [decoded]
             | if (len(parts) >= 64): linked = true
           end
-        | j += 2
+        | j = esc[:next]
         | start = j
       end
       elif (chars[j] == "$" && j + 1 < n && chars[j + 1] == "{") do
@@ -358,11 +401,9 @@ def _lex_one(chars, i, n):
               if (pos < j): continue
               elif (chars[pos] == delim): break
               elif (chars[pos] == "\\" && pos + 1 < n) do
-                let escaped = chars[pos + 1]
-                | j = pos + 2
-                | if (escaped == "n"): "\n"
-                  elif (escaped == "t"): "\t"
-                  else: escaped
+                let esc = _decode_escape(chars, pos, n)
+                | j = esc[:next]
+                | esc[:text]
               end
               else do
                 j = pos + 1
@@ -448,11 +489,9 @@ def _unescape(s):
   | join(foreach (pos, range(0, n - 1)):
       if (pos < next): continue
       elif (chars[pos] == "\\" && pos + 1 < n) do
-        let escaped = chars[pos + 1]
-        | next = pos + 2
-        | if (escaped == "n"): "\n"
-          elif (escaped == "t"): "\t"
-          else: escaped
+        let esc = _decode_escape(chars, pos, n)
+        | next = esc[:next]
+        | esc[:text]
       end
       else: chars[pos]
     end, "")

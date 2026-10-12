@@ -20,4 +20,4 @@ jobs:
         with:
           bins: test
       - name: Run tests
-        run: mq-test lexer_tests.mq parser_tests.mq eval_tests.mq mqmq_tests.mq
+        run: mq-test lexer_tests.mq parser_tests.mq eval_tests.mq builtins_tests.mq mqmq_tests.mq
