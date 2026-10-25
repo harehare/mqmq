@@ -63,11 +63,11 @@ mq compile -L mqmq \
   'include "mqmq" | nodes | mqmq(query)' \
   -o mqmq.mqc
 
-printf '# Hello\n\n## World\n' | mq mqmq.mqc --args query '.h1'
+printf '# Hello\n\n## World\n' | mq mqmq.mqc --arg query '.h1'
 # => # Hello
 
 # Reuse the same compiled program with a Markdown file:
-mq mqmq.mqc --args query '.h2' notes.md
+mq mqmq.mqc --arg query '.h2' notes.md
 ```
 
 The compiled program contains the imported `mqmq` modules, so running the `.mqc` file does not need `-L mqmq`. `mq compile` compiles the outer mq program; `mqmq(query)` still parses the supplied query when it runs. For repeated evaluation of the same query within one run, use `mqmq_compile` and `mqmq_eval_ast` as shown above. Recompile after changing the outer query or the mqmq source files. The `.mqc` format is experimental; recompile after upgrading mq.
