@@ -2,7 +2,7 @@
 # mqmq – an mq interpreter written in mq.
 #
 # Usage:
-# mq -L mqmq -f mqmq/mqmq.mq --args query '<mq-query>' <files...>
+# mq -L mqmq -f mqmq/mqmq.mq --arg query '<mq-query>' <files...>
 #
 # The query is tokenized, parsed, and evaluated against the input markdown
 # nodes using mq's own built-in runtime as the execution substrate.
