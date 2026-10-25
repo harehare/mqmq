@@ -151,7 +151,7 @@ end
 def mq_parse(tokens):
   let r = _parse_pipe_list(tokens, 0)
   | let pos = r[:pos]
-  | # A final `;` or `end` may close the program, as in mq.
+  # A final `;` or `end` may close the program, as in mq.
   | let tail = if (_at_op(tokens, pos, ";") || (tokens[pos][:t] == "kw" && tokens[pos][:v] == "end")): pos + 1 else: pos
   | if (_at_eof(tokens, tail)): r[:node]
     else: error("Unexpected token: type=" + tokens[tail][:t] + " value='" + to_string(tokens[tail][:v]) + "'")

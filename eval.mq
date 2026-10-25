@@ -917,7 +917,6 @@ def _hf(f, env, hint):
     end
   else: f
 end
-|
 
 | let _EXT_RECEIVER_ARITY = {
   "accumulate": 3, "add": 2, "and": 2, "atan2": 2, "band": 2, "between": 3, "bor": 2, "bsearch": 2,
