@@ -268,11 +268,13 @@ def test_eval_nodes_keyword(query, md, expected):
   assert_eq(_run(query, md), expected)
 end
 
-# -- ?? / .. precedence (?? and .. bind tighter than + * etc, like real mq) --
+# -- ?? / @ / .. precedence --
 
 # @parametrize([
-#   ["5 ?? 2 + 3", "", 8],
-#   ["5 ?? 2 * 3", "", 15],
+#   ["5 ?? 2 + 3", "", 5],
+#   ["None ?? 2 + 3", "", 5],
+#   ["None ?? 2 * 3", "", 6],
+#   ["(None ?? 2) * 3", "", 6],
 #   ["1..5", "", [1, 2, 3, 4, 5]],
 # ])
 def test_eval_precedence(query, md, expected):

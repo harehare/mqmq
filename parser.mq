@@ -60,16 +60,16 @@ import "lexer"
   "match": true, "module": true, "break": true, "continue": true,
 }
 # Binding power of each binary operator, lowest first. `!` sits between
-# `&&` (2) and the comparisons (3); see _parse_binary. `??` and `..` bind
-# tighter than the arithmetic operators in real mq (e.g. `5 ?? 2 * 3` is
-# `(5 ?? 2) * 3`).
+# `&&` (3) and the comparisons (4); see _parse_binary.
 | let _BIN_PREC = {
   "||": 1,
-  "&&": 2,
-  "==": 3, "!=": 3, "<": 3, "<=": 3, ">": 3, ">=": 3, "=~": 3, "!~": 3,
-  "+": 4, "-": 4, "<<": 4, ">>": 4,
-  "*": 5, "/": 5, "%": 5, "@": 5,
-  "??": 6, "..": 6,
+  "??": 2,
+  "&&": 3,
+  "==": 4, "!=": 4, "<": 4, "<=": 4, ">": 4, ">=": 4, "=~": 4, "!~": 4,
+  "+": 5, "-": 5, "<<": 5, ">>": 5,
+  "*": 6, "/": 6, "%": 6,
+  "@": 7,
+  "..": 8,
 }
 |
 
@@ -649,8 +649,8 @@ end
 # per operand replaces a call (and a {node, pos} result) per precedence level,
 # and an operand with no following operator is returned as-is.
 def _parse_binary(toks, pos, min_prec):
-  let first = if (min_prec <= 3 && _at_op(toks, pos, "!")) do
-      let r = _parse_binary(toks, pos + 1, 3)
+  let first = if (min_prec <= 4 && _at_op(toks, pos, "!")) do
+      let r = _parse_binary(toks, pos + 1, 4)
       | {node: {kind: "un", op: "!", expr: r[:node]}, pos: r[:pos]}
     end
     else: _parse_unary(toks, pos)
