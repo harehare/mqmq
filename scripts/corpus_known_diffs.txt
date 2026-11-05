@@ -1,0 +1,11 @@
+var i = 0 | until (false): i += 1 | if (i == 3): break i end end
+var i = 0 | while (true): i += 1 | if (i == 5): break i end end
+foreach (x, [1,2,3,4,5]): if (x == 3): break "stopped" else: x end end
+s"x${"}"}y"
+unique([1,2,2,3])
+head([1,2,3,4], 2)
+tail([1,2,3,4], 2)
+upper("hi")
+lower("HI")
+min([3,1,2])
+max([3,1,2])
