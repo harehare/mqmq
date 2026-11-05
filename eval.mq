@@ -317,6 +317,7 @@ let _DIRECT0 = {
 |
 
 let _DIRECT1 = {
+  "bit_length": try: (bit_length) catch: None,
   "abs": try: (abs) catch: None, "acos": try: (acos) catch: None,
   "ascii_downcase": try: (ascii_downcase) catch: None,
   "ascii_upcase": try: (ascii_upcase) catch: None, "asin": try: (asin) catch: None,
@@ -394,6 +395,9 @@ let _DIRECT3 = {
 |
 
 let _DIRECT_N2 = {
+  "hmac_sha256": try: (hmac_sha256) catch: None, "hmac_sha512": try: (hmac_sha512) catch: None,
+  "regex_match_info": try: (regex_match_info) catch: None,
+  "hash": try: (hash) catch: None,
   "add": try: (add) catch: None, "and": try: (and) catch: None,
   "atan2": try: (atan2) catch: None, "band": try: (band) catch: None,
   "bor": try: (bor) catch: None, "capture": try: (capture) catch: None,
@@ -919,6 +923,7 @@ def _hf(f, env, hint):
 end
 
 | let _EXT_RECEIVER_ARITY = {
+  "hmac_sha256": 2, "hmac_sha512": 2, "regex_match_info": 2,
   "accumulate": 3, "add": 2, "and": 2, "atan2": 2, "band": 2, "between": 3, "bor": 2, "bsearch": 2,
   "capture": 2, "center": 2, "chunk_by": 2, "chunks": 2, "clamp": 3, "coalesce": 2,
   "compact_map": 2, "convert": 2, "count_by": 2, "count_substr": 2, "css": 2, "css_attr": 3,
