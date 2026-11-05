@@ -164,12 +164,20 @@ def _parse_pipe_list(toks, pos):
   _parse_pipe_rest(toks, _parse_stmt(toks, pos))
 end
 
+# Statements closed by `end` (or, for a def / module, `;`). As in mq, the next
+# statement may follow one directly: `foreach (x, xs): x end len(xs)`.
+let _CLOSED_BLOCKS = {
+  "def": true, "module": true, "foreach": true, "while": true, "until": true,
+  "loop": true, "match": true, "do": true
+}
+|
+
 # Position where the next stage of a pipe starts, or None at the end of the
 # pipe. A stage follows a `|`, or a `def` closed by `;` / `end` directly, as in
 # `def f(x): x; f(1)`.
 def _next_stage(toks, node, pos):
   if (_at_op(toks, pos, "|")): pos + 1
-  elif (node[:kind] == "def" && _def_continues(toks, pos)): pos
+  elif (_CLOSED_BLOCKS[node[:kind]] == true && _def_continues(toks, pos)): pos
   else: None
 end
 
