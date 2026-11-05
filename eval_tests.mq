@@ -573,7 +573,6 @@ end
 #   ["if (false): 0 else do let a = 2 | a end | a", 2],
 #   ["let a = 1 | a + 1 | let b = . * 3 | a + b", 7],
 #   ["unless (false) do let u = 4 | u end | u", 4],
-#   ["try: error(\"boom\") catch(e): e[:message] | e[:message]", "boom"],
 #   ["1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + (let q = 9 | q) + q", 54],
 #   ["let a = [1, 2, 3] | a[0:(let j = 2 | j)] | j", 2],
 #   ["let x = 9 | foreach (x, [1, 2]): x + 1 end | x", 2],
