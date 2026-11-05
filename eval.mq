@@ -1935,6 +1935,45 @@ def _comp_assign(ast):
       end]
 end
 
+# `xs[i] op= v` / `d[:a][:b] = v`: read the element, combine, and write the
+# new value back through every level of the path.
+def _path_get(base, keys):
+  var cur = base
+  | foreach (k, keys): cur = cur[k] end
+  | cur
+end
+
+def _path_set(base, keys, i, nv):
+  if (i == len(keys)): nv
+  else: set(base, keys[i], _path_set(base[keys[i]], keys, i + 1, nv))
+end
+
+def _comp_assign_path(ast):
+  let name = ast[:name]
+  | let op = ast[:op]
+  | let steps = foreach (s, ast[:path]):
+      if (has(s, "key")): _comp_const(s[:key]) else: _comp(s[:index])
+    end
+  | let ixs = foreach (s, steps): _as_x(s) end
+  | let vx = _as_x(_comp(ast[:val]))
+  | [false, fn(value, env):
+      var keys = []
+      | var cur_env = env
+      | foreach (ix, ixs):
+          let r = ix(value, cur_env)
+          | keys = keys + [r[:val]]
+          | cur_env = r[:env]
+        end
+      | let vr = vx(value, cur_env)
+      | if (_ctrl(vr) != "none"): vr
+        else do
+          let base = env[name]
+          | let nv = _assign_value(op, _path_get(base, keys), vr[:val])
+          | {val: value, env: set(vr[:env], name, _path_set(base, keys, 0, nv))}
+        end
+    end]
+end
+
 # ── functions ─────────────────────────────────────────────────────────────────
 
 def _comp_fn(ast):
@@ -2494,7 +2533,7 @@ def _lift_node(n, depth):
           end
         | _hoisted(h[:binds], set(n, "segs", segs))
       end
-    elif (k == "let" || k == "var" || k == "assign" || k == "let_destructure" || k == "var_destructure" || k == "break") do
+    elif (k == "let" || k == "var" || k == "assign" || k == "assign_path" || k == "let_destructure" || k == "var_destructure" || k == "break") do
         if (n[:val] == None): n
         else do
             let h = _hoist_items([n[:val]], depth)
@@ -2620,6 +2659,7 @@ def _comp(ast):
     elif (k == "interp"): _comp_interp(ast)
     elif (k == "let" || k == "var"): _comp_let(ast)
     elif (k == "assign"): _comp_assign(ast)
+    elif (k == "assign_path"): _comp_assign_path(ast)
     elif (k == "let_destructure" || k == "var_destructure"): _comp_destructure(ast)
     elif (k == "fn"): _comp_fn(ast)
     elif (k == "def"): _comp_def(ast)

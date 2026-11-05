@@ -13,6 +13,7 @@
 #   let    {kind:"let",    name, val}
 #   var    {kind:"var",    name, val}
 #   assign {kind:"assign", name, op, val}
+#   assign_path {kind:"assign_path", name, path:[{index}|{key}], op, val}
 #   if     {kind:"if",     cond, then, elifs, else}
 #   unless {kind:"unless", cond, body}          - unless (cond): expr  (== if (!cond): expr)
 #   do     {kind:"do",     body}
@@ -239,6 +240,8 @@ def _parse_stmt(toks, pos):
     end
     elif (tok[:t] == "ident" && _is_assign_op(_peekn(toks, pos, 1)[:v])):
       _parse_assign(toks, pos)
+    elif (tok[:t] == "ident" && _at_v(toks, pos + 1, "[")):
+      _parse_path_assign_or_expr(toks, pos)
     else:
       _parse_expr(toks, pos)
 end
@@ -339,6 +342,30 @@ end
 def _parse_assign(toks, pos):
   let vr = _parse_expr(toks, pos + 2)
   | {node: {kind: "assign", name: toks[pos][:v], op: toks[pos + 1][:v], val: vr[:node]}, pos: vr[:pos]}
+end
+
+# `xs[0] += 1`, `d[:a][:b] = 2`: an assignment to an element. The target is
+# parsed as an ordinary subscript chain; anything that is not one (or is not
+# followed by an assignment operator) is parsed again as a plain expression.
+# The node is {kind:"assign_path", name, path:[{key} | {index}], op, val}.
+def _path_of(node):
+  var keys = []
+  | var cur = node
+  | while (cur[:kind] == "idx" || cur[:kind] == "dkey"):
+      keys = [if (cur[:kind] == "idx"): {index: cur[:index]} else: {key: cur[:key]}] + keys
+      | cur = cur[:base]
+    end
+  | if (cur[:kind] == "ident" && len(keys) > 0): {name: cur[:name], path: keys} else: None
+end
+
+def _parse_path_assign_or_expr(toks, pos):
+  let r = _parse_postfix(toks, pos)
+  | let target = _path_of(r[:node])
+  | if (target != None && _is_assign_op(toks[r[:pos]][:v]) && toks[r[:pos]][:t] == "op") do
+      let vr = _parse_expr(toks, r[:pos] + 1)
+      | {node: {kind: "assign_path", name: target[:name], path: target[:path], op: toks[r[:pos]][:v], val: vr[:node]}, pos: vr[:pos]}
+    end
+  else: _parse_expr(toks, pos)
 end
 
 # ── def ───────────────────────────────────────────────────────────────────────
@@ -442,6 +469,7 @@ def _parse_if_body(toks, pos):
     elif (toks[pos][:t] == "kw" && v == "let"): _parse_let(toks, pos)
     elif (toks[pos][:t] == "kw" && v == "var"): _parse_var_decl(toks, pos)
     elif (toks[pos][:t] == "ident" && _is_assign_op(_peekn(toks, pos, 1)[:v])): _parse_assign(toks, pos)
+    elif (toks[pos][:t] == "ident" && _at_v(toks, pos + 1, "[")): _parse_path_assign_or_expr(toks, pos)
     else: _parse_expr(toks, pos)
 end
 
