@@ -1,0 +1,120 @@
+"hello"
+42
+true
+"a" + "b"
+1 + 2
+3 * 4
+10 - 3
+10 / 2
+1 == 1
+1 != 2
+1 < 2
+2 > 1
+true && true
+false || true
+!false
+[1, 2, 3, 4][1]
+[1, 2, 3, 4][1:3]
+[1, 2, 3, 4][2:]
+if (true): 1 else: 2
+if (false): 1 else: 2
+let x = 5 | x
+let x = 3 | x * x
+1 + 2 | to_string
+(2 + 3) * 4
+var i = 0 | while (i < 5): i += 1 end | i
+var a = [1, 2] | a[0] += 5 | a
+foreach (x, [1]): x end 2
+var i = 0 | foreach (x, [1, 2]): i += x end i
+while (false): 1 end 2
+match (1): | 1: 2 end 3
+module m: def f(): 1; end m::f()
+match ([1, [2, 3]]): | [a, [b, c]]: b + c end
+match ({a: {b: 1}}): | {a: {b}}: b end
+match ({k: "x", n: 2}): | {k: "x", n}: n end
+match ([1, 2]): | [:string, x]: 0 | [:number, x]: x end
+match ([[1], [2]]): | [[a], ..r]: r end
+match ({a: 1}): | {a: 1, b}: "one" | _: "no" end
+match ({a: 1}): | {b}: "has" | _: "no" end
+let [a, [b, c]] = [1, [2, 3]] | c
+let {a: {b}} = {a: {b: 5}} | b
+var a = [10, 20, 30] | var i = 1 | a[i + 1] -= 1 | a
+var d = {a: {b: [1, 2]}} | d[:a][:b][1] *= 4 | d[:a][:b]
+var d = {a: 1} | d[:z] = 4 | d[:z]
+var i = 0 | until (i >= 5): i += 1 end | i
+unless (1 == 2): "ran"
+foreach (x, [1,2,3]): x * 2 end
+var i = 0 | var s = 0 | while (i < 10): i += 1 | if (i % 2 == 0): continue else do s += i end end | s
+var i = 0 | var s = 0 | until (i >= 10): i += 1 | if (i % 2 == 0): continue else do s += i end end | s
+foreach (x, [1,2,3,4,5]): if (x == 3): continue else: x end end
+try: error("boom") catch: "caught"
+try: 1 + 1 catch: "caught"
+try: error("boom") catch(e): e[:message]
+None ?? "fallback"
+"x" ?? "fallback"
+"abc" =~ "a.c"
+"abc" !~ "zzz"
+2 << 3
+16 >> 3
+let x = 5 | s"val=${x}"
+s"sum=${1+2}"
+s"plain text"
+5 ?? 2 + 3
+None ?? 2 + 3
+None ?? 2 * 3
+(None ?? 2) * 3
+1..5
+"Hello" @ :h1
+"Hello" @ "##"
+"note" @ ">"
+"item" @ "-"
+"old" @ "~~"
+"hello" @ :base64
+"mq" @ "https://mqlang.org"
+error("boom")? == None
+1 + error("boom")?
+var x = 7 | x //= 2 | x
+def greet(name, greeting="Hi"): greeting + " " + name end | greet("Bob")
+def greet(name, greeting="Hi"): greeting + " " + name end | greet("Bob", "Hello")
+let f = fn(x, factor=2): x * factor end | f(10)
+let [a, b] = [1, 2] | a
+let [head, ..tail] = [1, 2, 3] | tail
+let {name, age} = {"name": "Alice", "age": 30} | name
+let v = 2 | match (v): | 1: "one" | 2: "two" | _: "other" end
+match ("b"): | "a": 1 | "b": 2 end
+match (true): | false: 1 | true: 2 end
+match (None): | 1: 1 | None: 2 end
+let v = "x" | match (v): | :string: "is string" | :number: "is number" | _: "other" end
+let arr = [] | match (arr): | []: "empty" | [x]: x | [head, ..tail]: head end
+let arr = [1,2,3] | match (arr): | []: "empty" | [x]: x | [head, ..tail]: head end
+let obj = {"name": "Alice", "age": 30} | match (obj): | {name, age}: name | _: "unknown" end
+let n = 5 | match (n): | x if (x > 0): "positive" | x if (x < 0): "negative" | _: "zero" end
+let x = 2 | match (x): | 1 || 2 || 3: "small" | 4 || 5: "medium" | _: "other" end
+match (2): | 2 if (false): 0 | 2 if (true): 4 | _: 9 end
+def double(x): x * 2; | double(5)
+module math: def add(a, b): a + b; end | math::add(5, 3)
+let offset = 3 | map([1,2,3], fn(x): x + offset end)
+let cutoff = 2 | filter([1,2,3], fn(x): x > cutoff end)
+map([], fn(x): x end)
+filter([], fn(x): x end)
+fold([1,2,3,4], 0, fn(acc, x): acc + x end)
+let offset = 3 | fold([1,2,3], 0, fn(acc, x): acc + x + offset end)
+fold([], 7, fn(acc, x): acc + x end)
+len([1,2,3])
+[1,2,3] | len()
+pow(2, 3)
+is_coroutine(to_coroutine([1,2]))
+is_coroutine([1,2])
+collect(to_coroutine([1,2,3]))
+collect(stream_range(1, 5))
+collect(stream_range(1, 5, 2))
+collect(take(to_coroutine([1,2,3,4]), 2))
+collect(skip(to_coroutine([1,2,3,4]), 2))
+collect(take_while(to_coroutine([1,2,3,4]), fn(x): x < 3 end))
+collect(skip_while(to_coroutine([1,2,3,4]), fn(x): x < 3 end))
+next(to_coroutine([1,2]))
+iterables([1,2])
+stream_range(1, 10) | take(3) | collect()
+to_coroutine([1,2,3,4]) | skip(2) | collect()
+to_coroutine([1,2,3,4]) | take_while(fn(x): x < 3 end) | collect()
+to_coroutine([1,2,3,4]) | skip_while(fn(x): x < 3 end) | collect()

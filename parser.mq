@@ -13,6 +13,7 @@
 #   let    {kind:"let",    name, val}
 #   var    {kind:"var",    name, val}
 #   assign {kind:"assign", name, op, val}
+#   assign_path {kind:"assign_path", name, path:[{index}|{key}], op, val}
 #   if     {kind:"if",     cond, then, elifs, else}
 #   unless {kind:"unless", cond, body}          - unless (cond): expr  (== if (!cond): expr)
 #   do     {kind:"do",     body}
@@ -110,7 +111,7 @@ def _expect_v(toks, pos, v):
   | if (tok[:v] == v):
       pos + 1
     else:
-      error("Expected '" + to_string(v) + "' but got '" + to_string(tok[:v]) + "'")
+      _syntax_error(toks, pos, "Expected '" + to_string(v) + "' but got '" + to_string(tok[:v]) + "'")
 end
 
 # Require punctuation, not a string literal with the same text.
@@ -119,7 +120,40 @@ def _expect_op(toks, pos, v):
   | if (tok[:t] == "op" && tok[:v] == v):
       pos + 1
     else:
-      error("Expected operator '" + v + "' but got '" + to_string(tok[:v]) + "'")
+      _syntax_error(toks, pos, "Expected operator '" + v + "' but got '" + to_string(tok[:v]) + "'")
+end
+
+# ── error reporting ──────────────────────────────────────────────────────────
+#
+# Tokens carry no source offsets (keeping them costs the lexer time on every
+# query), so a syntax error shows the tokens around the offending one instead:
+# `Unexpected token: ... (near: a [ 0 ] »+=« 5)`. Only the error path pays.
+
+def _tok_text(tok):
+  let t = tok[:t]
+  | if (t == "str"): "\"" + tok[:v] + "\""
+    elif (t == "atom"): ":" + tok[:v]
+    elif (t == "sel"): "." + tok[:v]
+    elif (t == "none"): "None"
+    elif (t == "eof"): "<end of query>"
+    else: to_string(tok[:v])
+end
+
+def _near(toks, pos):
+  let from = if (pos > 5): pos - 5 else: 0
+  | let to = if (pos + 3 < len(toks)): pos + 3 else: len(toks) - 1
+  | var parts = []
+  | var i = from
+  | while (i <= to):
+      let text = _tok_text(toks[i])
+      | parts += [if (i == pos): "»" + text + "«" else: text]
+      | i += 1
+    end
+  | join(parts, " ")
+end
+
+def _syntax_error(toks, pos, msg):
+  error(msg + " (near: " + _near(toks, pos) + ")")
 end
 
 # Require a token type, returning the token.
@@ -128,7 +162,7 @@ def _expect_t(toks, pos, t):
   | if (tok[:t] == t):
       tok
     else:
-      error("Expected type '" + t + "' but got '" + tok[:t] + "'")
+      _syntax_error(toks, pos, "Expected type '" + t + "' but got '" + tok[:t] + "'")
 end
 
 def _is_assign_op(v):
@@ -154,7 +188,7 @@ def mq_parse(tokens):
   # A final `;` or `end` may close the program, as in mq.
   | let tail = if (_at_op(tokens, pos, ";") || (tokens[pos][:t] == "kw" && tokens[pos][:v] == "end")): pos + 1 else: pos
   | if (_at_eof(tokens, tail)): r[:node]
-    else: error("Unexpected token: type=" + tokens[tail][:t] + " value='" + to_string(tokens[tail][:v]) + "'")
+    else: _syntax_error(tokens, tail, "Unexpected token: type=" + tokens[tail][:t] + " value='" + to_string(tokens[tail][:v]) + "'")
 end
 
 # ── pipe list ─────────────────────────────────────────────────────────────────
@@ -163,12 +197,20 @@ def _parse_pipe_list(toks, pos):
   _parse_pipe_rest(toks, _parse_stmt(toks, pos))
 end
 
+# Statements closed by `end` (or, for a def / module, `;`). As in mq, the next
+# statement may follow one directly: `foreach (x, xs): x end len(xs)`.
+let _CLOSED_BLOCKS = {
+  "def": true, "module": true, "foreach": true, "while": true, "until": true,
+  "loop": true, "match": true, "do": true
+}
+|
+
 # Position where the next stage of a pipe starts, or None at the end of the
 # pipe. A stage follows a `|`, or a `def` closed by `;` / `end` directly, as in
 # `def f(x): x; f(1)`.
 def _next_stage(toks, node, pos):
   if (_at_op(toks, pos, "|")): pos + 1
-  elif (node[:kind] == "def" && _def_continues(toks, pos)): pos
+  elif (_CLOSED_BLOCKS[node[:kind]] == true && _def_continues(toks, pos)): pos
   else: None
 end
 
@@ -239,6 +281,8 @@ def _parse_stmt(toks, pos):
     end
     elif (tok[:t] == "ident" && _is_assign_op(_peekn(toks, pos, 1)[:v])):
       _parse_assign(toks, pos)
+    elif (tok[:t] == "ident" && _at_v(toks, pos + 1, "[")):
+      _parse_path_assign_or_expr(toks, pos)
     else:
       _parse_expr(toks, pos)
 end
@@ -248,7 +292,7 @@ end
 # Array pattern: [a, b] or [head, ..tail]. Small patterns use the direct
 # loop; after roughly 64 comma-separated names, foreach collects the tail
 # without copying the growing names array for each binding.
-def _parse_array_pattern(toks, pos):
+def _parse_array_pattern_simple(toks, pos):
   var names = []
   | var rest = None
   | var cur = pos + 1
@@ -285,7 +329,7 @@ end
 
 # Dict pattern (shorthand bind): {name, age}. Use the same collection
 # threshold as array patterns to avoid repeated copies for long patterns.
-def _parse_dict_pattern(toks, pos):
+def _parse_dict_pattern_simple(toks, pos):
   var names = []
   | var cur = pos + 1
   | while (!_at_v(toks, cur, "}") && !_at_eof(toks, cur) && cur < pos + 128):
@@ -305,6 +349,65 @@ def _parse_dict_pattern(toks, pos):
       | names = names + tail
     end
   | {node: {kind: "dictpat", names: names}, pos: _expect_v(toks, cur, "}")}
+end
+
+# A pattern is "simple" when it only binds names (`[a, ..rest]`, `{name, age}`).
+# Those keep the flat {names, rest} nodes; a pattern with nested patterns,
+# literals or `key: pattern` entries becomes a parraypat / pdictpat node.
+def _pattern_is_simple(toks, pos):
+  let closer = _find_closer(toks, pos + 1)
+  | var simple = true
+  | var i = pos + 1
+  | while (simple && i < closer):
+      let tok = toks[i]
+      | if (!(tok[:t] == "ident" || tok[:v] == "," || tok[:v] == "..")): simple = false
+      | i += 1
+    end
+  | simple
+end
+
+def _parse_array_pattern(toks, pos):
+  if (_pattern_is_simple(toks, pos)): _parse_array_pattern_simple(toks, pos)
+  else do
+    var items = []
+    | var rest = None
+    | var cur = pos + 1
+    | while (!_at_v(toks, cur, "]") && !_at_eof(toks, cur)):
+        if (_at_op(toks, cur, "..")) do
+            rest = _expect_t(toks, cur + 1, "ident")[:v]
+            | cur = cur + 2
+          end
+        else do
+            let pr = _parse_match_pattern(toks, cur)
+            | items += [pr[:node]]
+            | cur = pr[:pos]
+          end
+        | cur = _skip_v(toks, cur, ",")
+      end
+    | {node: {kind: "parraypat", items: items, rest: rest}, pos: _expect_v(toks, cur, "]")}
+  end
+end
+
+def _parse_dict_pattern(toks, pos):
+  if (_pattern_is_simple(toks, pos)): _parse_dict_pattern_simple(toks, pos)
+  else do
+    var entries = []
+    | var cur = pos + 1
+    | while (!_at_v(toks, cur, "}") && !_at_eof(toks, cur)):
+        let key = _expect_t(toks, cur, "ident")[:v]
+        | if (_at_op(toks, cur + 1, ":")) do
+            let pr = _parse_match_pattern(toks, cur + 2)
+            | entries += [{key: key, pat: pr[:node]}]
+            | cur = pr[:pos]
+          end
+          else do
+            entries += [{key: key, pat: {kind: "bindpat", name: key}}]
+            | cur = cur + 1
+          end
+        | cur = _skip_v(toks, cur, ",")
+      end
+    | {node: {kind: "pdictpat", entries: entries}, pos: _expect_v(toks, cur, "}")}
+  end
 end
 
 def _parse_destructure_pattern(toks, pos):
@@ -339,6 +442,30 @@ end
 def _parse_assign(toks, pos):
   let vr = _parse_expr(toks, pos + 2)
   | {node: {kind: "assign", name: toks[pos][:v], op: toks[pos + 1][:v], val: vr[:node]}, pos: vr[:pos]}
+end
+
+# `xs[0] += 1`, `d[:a][:b] = 2`: an assignment to an element. The target is
+# parsed as an ordinary subscript chain; anything that is not one (or is not
+# followed by an assignment operator) is parsed again as a plain expression.
+# The node is {kind:"assign_path", name, path:[{key} | {index}], op, val}.
+def _path_of(node):
+  var keys = []
+  | var cur = node
+  | while (cur[:kind] == "idx" || cur[:kind] == "dkey"):
+      keys = [if (cur[:kind] == "idx"): {index: cur[:index]} else: {key: cur[:key]}] + keys
+      | cur = cur[:base]
+    end
+  | if (cur[:kind] == "ident" && len(keys) > 0): {name: cur[:name], path: keys} else: None
+end
+
+def _parse_path_assign_or_expr(toks, pos):
+  let r = _parse_postfix(toks, pos)
+  | let target = _path_of(r[:node])
+  | if (target != None && _is_assign_op(toks[r[:pos]][:v]) && toks[r[:pos]][:t] == "op") do
+      let vr = _parse_expr(toks, r[:pos] + 1)
+      | {node: {kind: "assign_path", name: target[:name], path: target[:path], op: toks[r[:pos]][:v], val: vr[:node]}, pos: vr[:pos]}
+    end
+  else: _parse_expr(toks, pos)
 end
 
 # ── def ───────────────────────────────────────────────────────────────────────
@@ -442,6 +569,7 @@ def _parse_if_body(toks, pos):
     elif (toks[pos][:t] == "kw" && v == "let"): _parse_let(toks, pos)
     elif (toks[pos][:t] == "kw" && v == "var"): _parse_var_decl(toks, pos)
     elif (toks[pos][:t] == "ident" && _is_assign_op(_peekn(toks, pos, 1)[:v])): _parse_assign(toks, pos)
+    elif (toks[pos][:t] == "ident" && _at_v(toks, pos + 1, "[")): _parse_path_assign_or_expr(toks, pos)
     else: _parse_expr(toks, pos)
 end
 
@@ -603,7 +731,7 @@ def _parse_match_pattern_atom(toks, pos):
     elif (tok[:t] == "ident"):
       {node: {kind: "bindpat", name: tok[:v]}, pos: pos + 1}
     else:
-      error("Invalid match pattern at token: " + to_string(tok[:v]))
+      _syntax_error(toks, pos, "Invalid match pattern at token: " + to_string(tok[:v]))
 end
 
 # ── module (inline) ──────────────────────────────────────────────────────────
@@ -933,7 +1061,7 @@ def _parse_primary(toks, pos):
     elif (tok[:v] == "{"):
       _parse_dict(toks, pos)
     else:
-      error("Unexpected token: type=" + t + " value='" + to_string(tok[:v]) + "'")
+      _syntax_error(toks, pos, "Unexpected token: type=" + t + " value='" + to_string(tok[:v]) + "'")
 end
 
 def _parse_paren(toks, pos):

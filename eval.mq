@@ -80,6 +80,28 @@ def _bind_pattern(pat, val, env):
     end
 end
 
+def _has_all(d, names):
+  var ok = true
+  | var i = 0
+  | while (ok && i < len(names)):
+      if (!has(d, names[i])): ok = false
+      | i += 1
+    end
+  | ok
+end
+
+# Bind a `let` / `var` destructuring pattern. A pattern that only binds names
+# leaves the names it has no value for as None; one with nested patterns or
+# literals must fit the value, as in mq.
+def _destructure(pat, val, env):
+  let k = pat[:kind]
+  | if (k == "arraypat" || k == "dictpat"): _bind_pattern(pat, val, env)
+    else do
+      let r = _match_pattern(pat, val, env)
+      | if (r[:matched]): r[:env] else: error("Destructuring pattern did not match value")
+    end
+end
+
 # ── match / pattern matching ────────────────────────────────────────────────
 
 def _match_type(name, val):
@@ -117,6 +139,44 @@ def _match_pattern(pat, val, env):
         let lr = _match_pattern(pat[:left], val, env)
         | if (lr[:matched]): lr else: _match_pattern(pat[:right], val, env)
       end
+    elif (k == "parraypat") do
+        let items = pat[:items]
+        | if (!is_array(val)): {matched: false, env: env}
+          elif (pat[:rest] == None && len(items) != len(val)): {matched: false, env: env}
+          elif (len(val) < len(items)): {matched: false, env: env}
+          else do
+            var e = env
+            | var ok = true
+            | var i = 0
+            | while (ok && i < len(items)):
+                let r = _match_pattern(items[i], val[i], e)
+                | if (r[:matched]): e = r[:env] else: ok = false
+                | i += 1
+              end
+            | if (!ok): {matched: false, env: env}
+              elif (pat[:rest] != None): {matched: true, env: _env_set(e, pat[:rest], val[len(items):len(val)])}
+              else: {matched: true, env: e}
+          end
+      end
+    elif (k == "pdictpat") do
+        let entries = pat[:entries]
+        | if (!is_dict(val)): {matched: false, env: env}
+          else do
+            var e = env
+            | var ok = true
+            | var i = 0
+            | while (ok && i < len(entries)):
+                let en = entries[i]
+                | if (!has(val, en[:key])): ok = false
+                  else do
+                    let r = _match_pattern(en[:pat], val[en[:key]], e)
+                    | if (r[:matched]): e = r[:env] else: ok = false
+                  end
+                | i += 1
+              end
+            | if (ok): {matched: true, env: e} else: {matched: false, env: env}
+          end
+      end
     elif (k == "arraypat") do
         if (!is_array(val)) do
             {matched: false, env: env}
@@ -133,6 +193,7 @@ def _match_pattern(pat, val, env):
       end
     elif (k == "dictpat") do
         if (!is_dict(val)): {matched: false, env: env}
+        elif (!_has_all(val, pat[:names])): {matched: false, env: env}
         else: {matched: true, env: _bind_pattern(pat, val, env)}
       end
     else:
@@ -317,6 +378,7 @@ let _DIRECT0 = {
 |
 
 let _DIRECT1 = {
+  "bit_length": try: (bit_length) catch: None,
   "abs": try: (abs) catch: None, "acos": try: (acos) catch: None,
   "ascii_downcase": try: (ascii_downcase) catch: None,
   "ascii_upcase": try: (ascii_upcase) catch: None, "asin": try: (asin) catch: None,
@@ -394,6 +456,9 @@ let _DIRECT3 = {
 |
 
 let _DIRECT_N2 = {
+  "hmac_sha256": try: (hmac_sha256) catch: None, "hmac_sha512": try: (hmac_sha512) catch: None,
+  "regex_match_info": try: (regex_match_info) catch: None,
+  "hash": try: (hash) catch: None,
   "add": try: (add) catch: None, "and": try: (and) catch: None,
   "atan2": try: (atan2) catch: None, "band": try: (band) catch: None,
   "bor": try: (bor) catch: None, "capture": try: (capture) catch: None,
@@ -919,6 +984,7 @@ def _hf(f, env, hint):
 end
 
 | let _EXT_RECEIVER_ARITY = {
+  "hmac_sha256": 2, "hmac_sha512": 2, "regex_match_info": 2,
   "accumulate": 3, "add": 2, "and": 2, "atan2": 2, "band": 2, "between": 3, "bor": 2, "bsearch": 2,
   "capture": 2, "center": 2, "chunk_by": 2, "chunks": 2, "clamp": 3, "coalesce": 2,
   "compact_map": 2, "convert": 2, "count_by": 2, "count_substr": 2, "css": 2, "css_attr": 3,
@@ -1894,7 +1960,7 @@ def _comp_destructure(ast):
   | [false, fn(value, env):
       let vr = vx(value, env)
       | if (_ctrl(vr) != "none"): vr
-        else: {val: value, env: _bind_pattern(pattern, vr[:val], vr[:env])}
+        else: {val: value, env: _destructure(pattern, vr[:val], vr[:env])}
     end]
 end
 
@@ -1928,6 +1994,45 @@ def _comp_assign(ast):
             | {val: value, env: set(vr[:env], name, nv)}
           end
       end]
+end
+
+# `xs[i] op= v` / `d[:a][:b] = v`: read the element, combine, and write the
+# new value back through every level of the path.
+def _path_get(base, keys):
+  var cur = base
+  | foreach (k, keys): cur = cur[k] end
+  | cur
+end
+
+def _path_set(base, keys, i, nv):
+  if (i == len(keys)): nv
+  else: set(base, keys[i], _path_set(base[keys[i]], keys, i + 1, nv))
+end
+
+def _comp_assign_path(ast):
+  let name = ast[:name]
+  | let op = ast[:op]
+  | let steps = foreach (s, ast[:path]):
+      if (has(s, "key")): _comp_const(s[:key]) else: _comp(s[:index])
+    end
+  | let ixs = foreach (s, steps): _as_x(s) end
+  | let vx = _as_x(_comp(ast[:val]))
+  | [false, fn(value, env):
+      var keys = []
+      | var cur_env = env
+      | foreach (ix, ixs):
+          let r = ix(value, cur_env)
+          | keys = keys + [r[:val]]
+          | cur_env = r[:env]
+        end
+      | let vr = vx(value, cur_env)
+      | if (_ctrl(vr) != "none"): vr
+        else do
+          let base = env[name]
+          | let nv = _assign_value(op, _path_get(base, keys), vr[:val])
+          | {val: value, env: set(vr[:env], name, _path_set(base, keys, 0, nv))}
+        end
+    end]
 end
 
 # ── functions ─────────────────────────────────────────────────────────────────
@@ -2020,7 +2125,12 @@ def _comp_try(ast):
               bx(value, env)
             catch(e):
               if (catch_var == None): cx(value, env)
-              else: cx(value, set(env, catch_var, e))
+              else do
+                # The binder is visible in the catch body only: put back what
+                # the name held before, or remove it.
+                let r = cx(value, set(env, catch_var, e))
+                | set(r, "env", if (has(env, catch_var)): set(r[:env], catch_var, env[catch_var]) else: del(r[:env], catch_var))
+              end
           end]
       end
 end
@@ -2489,7 +2599,7 @@ def _lift_node(n, depth):
           end
         | _hoisted(h[:binds], set(n, "segs", segs))
       end
-    elif (k == "let" || k == "var" || k == "assign" || k == "let_destructure" || k == "var_destructure" || k == "break") do
+    elif (k == "let" || k == "var" || k == "assign" || k == "assign_path" || k == "let_destructure" || k == "var_destructure" || k == "break") do
         if (n[:val] == None): n
         else do
             let h = _hoist_items([n[:val]], depth)
@@ -2615,6 +2725,7 @@ def _comp(ast):
     elif (k == "interp"): _comp_interp(ast)
     elif (k == "let" || k == "var"): _comp_let(ast)
     elif (k == "assign"): _comp_assign(ast)
+    elif (k == "assign_path"): _comp_assign_path(ast)
     elif (k == "let_destructure" || k == "var_destructure"): _comp_destructure(ast)
     elif (k == "fn"): _comp_fn(ast)
     elif (k == "def"): _comp_def(ast)
