@@ -251,7 +251,7 @@ end
 # Array pattern: [a, b] or [head, ..tail]. Small patterns use the direct
 # loop; after roughly 64 comma-separated names, foreach collects the tail
 # without copying the growing names array for each binding.
-def _parse_array_pattern(toks, pos):
+def _parse_array_pattern_simple(toks, pos):
   var names = []
   | var rest = None
   | var cur = pos + 1
@@ -288,7 +288,7 @@ end
 
 # Dict pattern (shorthand bind): {name, age}. Use the same collection
 # threshold as array patterns to avoid repeated copies for long patterns.
-def _parse_dict_pattern(toks, pos):
+def _parse_dict_pattern_simple(toks, pos):
   var names = []
   | var cur = pos + 1
   | while (!_at_v(toks, cur, "}") && !_at_eof(toks, cur) && cur < pos + 128):
@@ -308,6 +308,65 @@ def _parse_dict_pattern(toks, pos):
       | names = names + tail
     end
   | {node: {kind: "dictpat", names: names}, pos: _expect_v(toks, cur, "}")}
+end
+
+# A pattern is "simple" when it only binds names (`[a, ..rest]`, `{name, age}`).
+# Those keep the flat {names, rest} nodes; a pattern with nested patterns,
+# literals or `key: pattern` entries becomes a parraypat / pdictpat node.
+def _pattern_is_simple(toks, pos):
+  let closer = _find_closer(toks, pos + 1)
+  | var simple = true
+  | var i = pos + 1
+  | while (simple && i < closer):
+      let tok = toks[i]
+      | if (!(tok[:t] == "ident" || tok[:v] == "," || tok[:v] == "..")): simple = false
+      | i += 1
+    end
+  | simple
+end
+
+def _parse_array_pattern(toks, pos):
+  if (_pattern_is_simple(toks, pos)): _parse_array_pattern_simple(toks, pos)
+  else do
+    var items = []
+    | var rest = None
+    | var cur = pos + 1
+    | while (!_at_v(toks, cur, "]") && !_at_eof(toks, cur)):
+        if (_at_op(toks, cur, "..")) do
+            rest = _expect_t(toks, cur + 1, "ident")[:v]
+            | cur = cur + 2
+          end
+        else do
+            let pr = _parse_match_pattern(toks, cur)
+            | items += [pr[:node]]
+            | cur = pr[:pos]
+          end
+        | cur = _skip_v(toks, cur, ",")
+      end
+    | {node: {kind: "parraypat", items: items, rest: rest}, pos: _expect_v(toks, cur, "]")}
+  end
+end
+
+def _parse_dict_pattern(toks, pos):
+  if (_pattern_is_simple(toks, pos)): _parse_dict_pattern_simple(toks, pos)
+  else do
+    var entries = []
+    | var cur = pos + 1
+    | while (!_at_v(toks, cur, "}") && !_at_eof(toks, cur)):
+        let key = _expect_t(toks, cur, "ident")[:v]
+        | if (_at_op(toks, cur + 1, ":")) do
+            let pr = _parse_match_pattern(toks, cur + 2)
+            | entries += [{key: key, pat: pr[:node]}]
+            | cur = pr[:pos]
+          end
+          else do
+            entries += [{key: key, pat: {kind: "bindpat", name: key}}]
+            | cur = cur + 1
+          end
+        | cur = _skip_v(toks, cur, ",")
+      end
+    | {node: {kind: "pdictpat", entries: entries}, pos: _expect_v(toks, cur, "}")}
+  end
 end
 
 def _parse_destructure_pattern(toks, pos):
