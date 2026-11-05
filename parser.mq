@@ -111,7 +111,7 @@ def _expect_v(toks, pos, v):
   | if (tok[:v] == v):
       pos + 1
     else:
-      error("Expected '" + to_string(v) + "' but got '" + to_string(tok[:v]) + "'")
+      _syntax_error(toks, pos, "Expected '" + to_string(v) + "' but got '" + to_string(tok[:v]) + "'")
 end
 
 # Require punctuation, not a string literal with the same text.
@@ -120,7 +120,40 @@ def _expect_op(toks, pos, v):
   | if (tok[:t] == "op" && tok[:v] == v):
       pos + 1
     else:
-      error("Expected operator '" + v + "' but got '" + to_string(tok[:v]) + "'")
+      _syntax_error(toks, pos, "Expected operator '" + v + "' but got '" + to_string(tok[:v]) + "'")
+end
+
+# ── error reporting ──────────────────────────────────────────────────────────
+#
+# Tokens carry no source offsets (keeping them costs the lexer time on every
+# query), so a syntax error shows the tokens around the offending one instead:
+# `Unexpected token: ... (near: a [ 0 ] »+=« 5)`. Only the error path pays.
+
+def _tok_text(tok):
+  let t = tok[:t]
+  | if (t == "str"): "\"" + tok[:v] + "\""
+    elif (t == "atom"): ":" + tok[:v]
+    elif (t == "sel"): "." + tok[:v]
+    elif (t == "none"): "None"
+    elif (t == "eof"): "<end of query>"
+    else: to_string(tok[:v])
+end
+
+def _near(toks, pos):
+  let from = if (pos > 5): pos - 5 else: 0
+  | let to = if (pos + 3 < len(toks)): pos + 3 else: len(toks) - 1
+  | var parts = []
+  | var i = from
+  | while (i <= to):
+      let text = _tok_text(toks[i])
+      | parts += [if (i == pos): "»" + text + "«" else: text]
+      | i += 1
+    end
+  | join(parts, " ")
+end
+
+def _syntax_error(toks, pos, msg):
+  error(msg + " (near: " + _near(toks, pos) + ")")
 end
 
 # Require a token type, returning the token.
@@ -129,7 +162,7 @@ def _expect_t(toks, pos, t):
   | if (tok[:t] == t):
       tok
     else:
-      error("Expected type '" + t + "' but got '" + tok[:t] + "'")
+      _syntax_error(toks, pos, "Expected type '" + t + "' but got '" + tok[:t] + "'")
 end
 
 def _is_assign_op(v):
@@ -155,7 +188,7 @@ def mq_parse(tokens):
   # A final `;` or `end` may close the program, as in mq.
   | let tail = if (_at_op(tokens, pos, ";") || (tokens[pos][:t] == "kw" && tokens[pos][:v] == "end")): pos + 1 else: pos
   | if (_at_eof(tokens, tail)): r[:node]
-    else: error("Unexpected token: type=" + tokens[tail][:t] + " value='" + to_string(tokens[tail][:v]) + "'")
+    else: _syntax_error(tokens, tail, "Unexpected token: type=" + tokens[tail][:t] + " value='" + to_string(tokens[tail][:v]) + "'")
 end
 
 # ── pipe list ─────────────────────────────────────────────────────────────────
@@ -698,7 +731,7 @@ def _parse_match_pattern_atom(toks, pos):
     elif (tok[:t] == "ident"):
       {node: {kind: "bindpat", name: tok[:v]}, pos: pos + 1}
     else:
-      error("Invalid match pattern at token: " + to_string(tok[:v]))
+      _syntax_error(toks, pos, "Invalid match pattern at token: " + to_string(tok[:v]))
 end
 
 # ── module (inline) ──────────────────────────────────────────────────────────
@@ -1028,7 +1061,7 @@ def _parse_primary(toks, pos):
     elif (tok[:v] == "{"):
       _parse_dict(toks, pos)
     else:
-      error("Unexpected token: type=" + t + " value='" + to_string(tok[:v]) + "'")
+      _syntax_error(toks, pos, "Unexpected token: type=" + t + " value='" + to_string(tok[:v]) + "'")
 end
 
 def _parse_paren(toks, pos):

@@ -383,3 +383,8 @@ def test_parse_closers_inside_string_literals():
   | assert_eq(colon_index[:kind], "idx")
   | assert_eq(colon_index[:index], {kind: "str", val: ":"})
 end
+
+def test_parse_error_shows_surrounding_tokens():
+  let msg = try: _parse("1 + * 2") catch(e): e[:message]
+  | assert_eq(contains(msg, "(near: 1 + »*« 2"), true)
+end
