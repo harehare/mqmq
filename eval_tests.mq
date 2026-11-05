@@ -80,6 +80,8 @@ end
 #   ["(2 + 3) * 4", "", 20],
 #   ["var i = 0 | while (i < 5): i += 1 end | i", "", 5],
 #   ["var a = [1, 2] | a[0] += 5 | a", "", [6, 2]],
+#   ["let e = 1 | try: error(\"x\") catch(e): 2 | e", "", 1],
+#   ["var n = 0 | try: error(\"x\") catch(e): n += 1 | n", "", 1],
 #   ["foreach (x, [1]): x end 2", "", 2],
 #   ["var i = 0 | foreach (x, [1, 2]): i += x end i", "", 3],
 #   ["while (false): 1 end 2", "", 2],

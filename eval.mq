@@ -2125,7 +2125,12 @@ def _comp_try(ast):
               bx(value, env)
             catch(e):
               if (catch_var == None): cx(value, env)
-              else: cx(value, set(env, catch_var, e))
+              else do
+                # The binder is visible in the catch body only: put back what
+                # the name held before, or remove it.
+                let r = cx(value, set(env, catch_var, e))
+                | set(r, "env", if (has(env, catch_var)): set(r[:env], catch_var, env[catch_var]) else: del(r[:env], catch_var))
+              end
           end]
       end
 end

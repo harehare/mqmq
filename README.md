@@ -60,17 +60,17 @@ mq mqmq.mqc --arg query '.h2' notes.md
 
 - Selectors return arrays instead of streaming nodes.
 - No file-based `import` / `include` inside a query.
-- `|=` path assignment is not implemented.
-- Statements must be `|`-chained (except after a closed `def`).
-- `match` array/dict patterns do not nest.
-- `catch(e)` binds `e` in the surrounding scope.
+- `|=` selector-path assignment is not implemented (`xs[i] += 1` and `d[:a][:b] = v` are).
+- Statements must be `|`-chained, except directly after a block closed by `end` (or a `def` closed by `;`), as in mq.
 - No `yield`; no `:sh`; no built-ins that touch the host (files, network, processes, stdin, `halt`).
 - A function passed to a forwarded built-in must take exactly the arguments the built-in supplies.
 
 ## Tests and Benchmarks
 
 ```sh
-mq-test      # runs every *_tests.mq
+mq-test                    # runs every *_tests.mq
+scripts/difftest.sh        # compares query results with the real mq (MQ=path/to/mq)
+scripts/check_builtins.sh  # host built-ins mqmq does not know yet
 mq-bench bench/benchmarks.mq --filter fibonacci_20 --iterations 1 --warmup 0
 ```
 
