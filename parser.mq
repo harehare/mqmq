@@ -277,6 +277,10 @@ def _parse_stmt(toks, pos):
         elif (v == "try"):     _parse_try(toks, pos)
         elif (v == "match"):   _parse_match(toks, pos)
         elif (v == "module"):  _parse_module(toks, pos)
+        # `import "html"` / `include "x"`: the host standard modules are
+        # always available, so the statement leaves the value unchanged.
+        elif ((v == "import" || v == "include") && toks[pos + 1][:t] == "str"):
+          {node: {kind: "self"}, pos: pos + 2}
         else: _parse_expr(toks, pos)
     end
     elif (tok[:t] == "ident" && _is_assign_op(_peekn(toks, pos, 1)[:v])):

@@ -16,6 +16,7 @@
 # number of times without compiling again.
 
 import "yaml"
+| import "html"
 | let _HEADING_NAMES = {h1: true, h2: true, h3: true, h4: true, h5: true, h6: true}
 | let _ITEM_LITERAL_BIN_OPS = {
     "+": true, "-": true, "*": true, "/": true, "%": true,
@@ -463,7 +464,6 @@ let _DIRECT_N2 = {
   "atan2": try: (atan2) catch: None, "band": try: (band) catch: None,
   "bor": try: (bor) catch: None, "capture": try: (capture) catch: None,
   "coalesce": try: (coalesce) catch: None, "convert": try: (convert) catch: None,
-  "css": try: (css) catch: None, "css_text": try: (css_text) catch: None,
   "date_relative": try: (date_relative) catch: None, "decode": try: (decode) catch: None,
   "div": try: (div) catch: None, "encode": try: (encode) catch: None,
   "glob_match": try: (glob_match) catch: None, "has": try: (has) catch: None,
@@ -493,12 +493,15 @@ let _DIRECT_N2 = {
 # The names _special_builtin handles, so that a name that is not a built-in is
 # rejected without walking its chain.
 let _SPECIAL = {
+  "html::html_parse": true, "html::html_stringify": true, "html::html_find_all": true,
+  "html::html_find": true, "html::html_attr": true, "html::html_text": true,
+  "html::html_to_json": true, "html::html_select": true,
   "accumulate": true, "all": true, "any": true, "arrays": true, "between": true,
   "blockquote": true, "bold": true, "booleans": true, "bsearch": true, "bytes": true,
   "center": true, "chars": true, "chomp": true, "chunk_by": true, "chunks": true,
   "clamp": true, "code": true, "code_inline": true, "collect": true, "combinations": true,
   "common_indent": true, "compact_map": true, "contains": true, "count_by": true,
-  "count_substr": true, "css_attr": true, "cumavg": true, "cumsum": true, "date_add": true,
+  "count_substr": true, "cumavg": true, "cumsum": true, "date_add": true,
   "date_diff": true, "debug": true, "dedent": true, "del_path": true, "del_paths": true,
   "demote_heading": true, "describe": true, "dicts": true, "difference": true, "each": true,
   "env": true, "eq": true, "fill": true, "filter": true, "find": true, "find_index": true,
@@ -718,7 +721,14 @@ def _special_builtin(name):
   elif (name == "compact_map"): fn(a0, a1, a2, n, value, env): if (n >= 2): compact_map(a0, _hf(a1, env, 1)) else: compact_map(a0) end
   elif (name == "count_by"): fn(a0, a1, a2, n, value, env): if (n >= 2): count_by(a0, _hf(a1, env, 1)) else: count_by(a0) end
   elif (name == "count_substr"): fn(a0, a1, a2, n, value, env): if (n >= 2): count_substr(a0, a1) else: count_substr(a0) end
-  elif (name == "css_attr"): fn(a0, a1, a2, n, value, env): if (n >= 3): css_attr(a0, a1, a2) elif (n == 2): css_attr(a0, a1) else: css_attr(a0) end
+  elif (name == "html::html_parse"): fn(a0, a1, a2, n, value, env): html::html_parse(a0) end
+  elif (name == "html::html_stringify"): fn(a0, a1, a2, n, value, env): html::html_stringify(a0) end
+  elif (name == "html::html_find_all"): fn(a0, a1, a2, n, value, env): html::html_find_all(a0, a1) end
+  elif (name == "html::html_find"): fn(a0, a1, a2, n, value, env): html::html_find(a0, a1) end
+  elif (name == "html::html_attr"): fn(a0, a1, a2, n, value, env): html::html_attr(a0, a1) end
+  elif (name == "html::html_text"): fn(a0, a1, a2, n, value, env): html::html_text(a0) end
+  elif (name == "html::html_to_json"): fn(a0, a1, a2, n, value, env): html::html_to_json(a0) end
+  elif (name == "html::html_select"): fn(a0, a1, a2, n, value, env): html::html_select(a0, a1) end
   elif (name == "cumavg"): fn(a0, a1, a2, n, value, env): cumavg(a0) end
   elif (name == "cumsum"): fn(a0, a1, a2, n, value, env): cumsum(a0) end
   elif (name == "date_add"): fn(a0, a1, a2, n, value, env): if (n >= 3): date_add(a0, a1, a2) elif (n == 2): date_add(a0, a1) else: date_add(a0) end
@@ -987,8 +997,8 @@ end
   "hmac_sha256": 2, "hmac_sha512": 2, "regex_match_info": 2,
   "accumulate": 3, "add": 2, "and": 2, "atan2": 2, "band": 2, "between": 3, "bor": 2, "bsearch": 2,
   "capture": 2, "center": 2, "chunk_by": 2, "chunks": 2, "clamp": 3, "coalesce": 2,
-  "compact_map": 2, "convert": 2, "count_by": 2, "count_substr": 2, "css": 2, "css_attr": 3,
-  "css_text": 2, "date_add": 3, "date_diff": 3, "date_relative": 2, "decode": 2, "del_path": 2,
+  "compact_map": 2, "convert": 2, "count_by": 2, "count_substr": 2,
+  "date_add": 3, "date_diff": 3, "date_relative": 2, "decode": 2, "del_path": 2,
   "del_paths": 2, "difference": 2, "div": 2, "encode": 2, "eq": 2, "fill": 2, "find": 2,
   "find_index": 2, "flip": 3, "fold_while": 3, "frequencies_by": 2, "gcd": 2, "get_or": 3,
   "get_path": 2, "glob_match": 2, "gt": 2, "gte": 2, "has": 2, "hypot": 2, "indent": 2, "index": 2,
@@ -1766,6 +1776,12 @@ def _comp_dict_pairs(ast):
       end
 end
 
+# mq renders bytes in a string interpolation as hex (`to_string` decodes them
+# as UTF-8 and fails on invalid sequences).
+def _interp_str(v):
+  if (type(v) == "bytes"): to_hex(v) else: to_string(v)
+end
+
 def _comp_interp(ast):
   let parts = foreach (s, ast[:segs]):
     if (s[:kind] == "text"): [false, s[:val]]
@@ -1773,7 +1789,7 @@ def _comp_interp(ast):
   end
   | [true, fn(value, env):
       join(foreach (p, parts):
-        if (p[0]): to_string(p[1](value, env)) else: p[1]
+        if (p[0]): _interp_str(p[1](value, env)) else: p[1]
       end, "")
     end]
 end
