@@ -1776,6 +1776,12 @@ def _comp_dict_pairs(ast):
       end
 end
 
+# mq renders bytes in a string interpolation as hex (`to_string` decodes them
+# as UTF-8 and fails on invalid sequences).
+def _interp_str(v):
+  if (type(v) == "bytes"): to_hex(v) else: to_string(v)
+end
+
 def _comp_interp(ast):
   let parts = foreach (s, ast[:segs]):
     if (s[:kind] == "text"): [false, s[:val]]
@@ -1783,7 +1789,7 @@ def _comp_interp(ast):
   end
   | [true, fn(value, env):
       join(foreach (p, parts):
-        if (p[0]): to_string(p[1](value, env)) else: p[1]
+        if (p[0]): _interp_str(p[1](value, env)) else: p[1]
       end, "")
     end]
 end

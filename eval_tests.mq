@@ -273,6 +273,8 @@ end
 #   ["s\"sum=${1+2}\"", "", "sum=3"],
 #   ["s\"plain text\"", "", "plain text"],
 #   ["s\"x${\"}\"}y\"", "", "x}y"],
+#   ["s\"${to_bytes(\"hi\")}\"", "", "6869"],
+#   ["s\"${from_hex(\"ff\")}\"", "", "ff"],
 # ])
 def test_eval_string_interp(query, md, expected):
   assert_eq(_run(query, md), expected)
