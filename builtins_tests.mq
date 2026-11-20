@@ -237,7 +237,9 @@ end
 #   ["zfill(-42, 5)", "-0042"],
 # ])
 def test_builtin_matches_mq(query, expected):
-  assert_eq(to_string(_run(query, None)), expected)
+  # mq prints bytes as hex, but to_string would decode them as UTF-8.
+  let r = _run(query, None)
+  | assert_eq(if (type(r) == "bytes"): to_hex(r) else: to_string(r), expected)
 end
 
 def _selector_doc():
