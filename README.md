@@ -23,7 +23,7 @@ query string ─ lexer.mq ─▶ tokens ─ parser.mq ─▶ AST ─ eval.mq (co
 
 ## Quick start
 
-Requires [mq](https://github.com/harehare/mq) v0.9.0 or later.
+Requires [mq](https://github.com/harehare/mq) v0.10.2 or later.
 
 ```sh
 git clone https://github.com/harehare/mqmq.git

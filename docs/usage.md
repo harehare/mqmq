@@ -1,6 +1,6 @@
 # Usage
 
-Requires [mq](https://github.com/harehare/mq) v0.9.0 or later. Clone the repo and load it with `-L`:
+Requires [mq](https://github.com/harehare/mq) v0.10.2 or later. Clone the repo and load it with `-L`:
 
 ```sh
 git clone https://github.com/harehare/mqmq.git
